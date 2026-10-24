@@ -1,0 +1,31 @@
+{
+  "profiles": {
+    "fast": {
+      "n_gpu_layers": 999,
+      "context_tokens": 4096,
+      "max_tokens": 768,
+      "temperature": 0.15,
+      "two_pass": false,
+      "confidence_threshold": 0.65,
+      "batch_size": 20,
+      "threads": 4
+    },
+    "accurate": {
+      "n_gpu_layers": 999,
+      "context_tokens": 8192,
+      "max_tokens": 1024,
+      "temperature": 0.05,
+      "two_pass": true,
+      "confidence_threshold": 0.8,
+      "batch_size": 10,
+      "threads": 6
+    }
+  },
+  "model": {
+    "label": "Mistral Nemo 12B",
+    "filename": "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+    "url": "https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+    "size_mb": 7100,
+    "min_ram_gb": 8
+  }
+}

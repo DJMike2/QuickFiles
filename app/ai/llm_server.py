@@ -1,0 +1,136 @@
+"""Own one llama-server subprocess; GPU startup can fall back to CPU."""
+from __future__ import annotations
+
+import atexit
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+
+class LLMServerError(RuntimeError):
+    pass
+
+
+class ContextTooLargeError(LLMServerError):
+    pass
+
+
+class LLMServer:
+    def __init__(self, binary_manager, model_path, profile):
+        self.binary_manager = binary_manager
+        self.model_path = model_path
+        self.profile = profile
+        self._process = None
+        self._output = None
+        self.port = 0
+        self.backend = "cpu"
+
+    @property
+    def is_running(self):
+        return self._process is not None and self._process.poll() is None
+
+    def start(self, status_cb=None, cancelled=None):
+        if self.is_running:
+            return
+        status_cb = status_cb or (lambda message: None)
+        cancelled = cancelled or (lambda: False)
+        manager = self.binary_manager
+        if not manager.is_available or not self.model_path.is_file():
+            raise LLMServerError("AI engine or model is missing")
+        attempts = []
+        if manager.gpu_binary_path:
+            attempts.append((manager.gpu_binary_path, self.profile["n_gpu_layers"], manager.hardware.backend))
+        metal = manager.hardware.backend == "metal"
+        attempts.append((manager.cpu_binary_path, self.profile["n_gpu_layers"] if metal else 0,
+                         "metal" if metal else "cpu"))
+        errors = []
+        for binary, layers, backend in attempts:
+            if cancelled():
+                raise InterruptedError("Model loading stopped")
+            try:
+                # Choose a free local port without terminating unrelated processes.
+                with socket.socket() as sock:
+                    sock.bind(("127.0.0.1", 0))
+                    self.port = sock.getsockname()[1]
+                environment = dict(os.environ)
+                environment["PATH"] = str(binary.parent) + os.pathsep + environment.get("PATH", "")
+                self._output = tempfile.TemporaryFile()
+                self._process = subprocess.Popen(
+                    [str(binary), "--model", str(self.model_path), "--host", "127.0.0.1",
+                     "--port", str(self.port), "--ctx-size", str(self.profile["context_tokens"]),
+                     "--n-gpu-layers", str(layers), "--threads", str(self.profile["threads"])],
+                    stdout=self._output, stderr=subprocess.STDOUT, cwd=binary.parent, env=environment,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+                atexit.register(self.stop)
+                deadline = time.monotonic() + 60
+                while time.monotonic() < deadline:
+                    if cancelled():
+                        raise InterruptedError("Model loading stopped")
+                    if not self.is_running:
+                        self._output.seek(0)
+                        detail = self._output.read(4096).decode(errors="replace")
+                        raise LLMServerError(f"Engine exited during startup: {detail}")
+                    try:
+                        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1) as response:
+                            if response.status == 200:
+                                self.backend = backend
+                                return
+                    except (OSError, urllib.error.URLError):
+                        pass
+                    status_cb(f"Loading model ({backend.upper()})…")
+                    time.sleep(0.3)
+                raise LLMServerError("Model loading timed out")
+            except InterruptedError:
+                self.stop()
+                raise
+            except (OSError, LLMServerError) as exc:
+                errors.append(str(exc))
+                self.stop()
+                status_cb("Trying the CPU engine…")
+        raise LLMServerError("; ".join(errors))
+
+    def chat(self, system, user, max_tokens, temperature):
+        if not self.is_running:
+            raise LLMServerError("The local AI engine is not running")
+        payload = {
+            "model": "local", "messages": [
+                {"role": "system", "content": system}, {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens, "temperature": temperature, "stream": False,
+        }
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/v1/chat/completions",
+            data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                return json.load(response)["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(4096).decode(errors="replace")
+            if exc.code == 400 and any(word in detail.lower() for word in ("context", "exceed")):
+                raise ContextTooLargeError(detail) from exc
+            raise LLMServerError(f"Engine HTTP {exc.code}: {detail}") from exc
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+            raise LLMServerError(f"Local AI request failed: {exc}") from exc
+
+    def stop(self):
+        atexit.unregister(self.stop)
+        if self._process is not None:
+            if self._process.poll() is None:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait()
+            self._process = None
+        if self._output is not None:
+            self._output.close()
+            self._output = None
