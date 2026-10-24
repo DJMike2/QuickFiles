@@ -1,0 +1,27 @@
+"""Construct the services used by the desktop window."""
+from app.ai.binary_manager import BinaryManager
+from app.ai.hardware_probe import probe
+from app.ai.model_manager import ModelManager
+from app.ai.runtime import AIRuntime
+from app.logging_setup import setup_logging
+from app.storage import Journal
+
+
+class AppContext:
+    def __init__(self, config):
+        self.config = config
+        setup_logging(config.app_data_dir / "logs")
+        self.hardware = probe()
+        self.model_manager = ModelManager(config.models_dir)
+        self.binary_manager = BinaryManager(config.app_data_dir, self.hardware)
+        self.runtime = AIRuntime(self.binary_manager, self.model_manager)
+        self.journal = Journal(config.db_path)
+
+    @property
+    def mode(self):
+        chosen = self.config.get("mode")
+        return chosen if chosen in {"fast", "accurate"} else self.hardware.recommended_mode
+
+    def shutdown(self):
+        self.runtime.shutdown()
+        self.journal.close()
