@@ -19,9 +19,6 @@ DEFAULTS = {
     "content_read_bytes": DEFAULT_CONTENT_READ_BYTES,
     "shortcuts_movable": False,
     "duplicate_suffix_allowed": True,
-    "setup_complete": False,
-    "setup_skipped": False,
-    "ai_mode_preference": "ai",
     "window_geometry": None,
 }
 
