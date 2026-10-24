@@ -102,14 +102,13 @@ class MainWindow(QMainWindow):
 
     def _buttons(self):
         busy = self.worker is not None
-        self.apply.setEnabled(not busy and bool(self.plan and self.plan.actions))
+        self.apply.setEnabled(not busy and self.ctx.runtime.available and bool(self.plan and self.plan.actions))
         self.undo.setEnabled(not busy and self.ctx.journal.get_latest_batch() is not None)
         self.scan.setText("Stop" if busy and self._job_kind == "scan" else "Scan")
         self.scan.setEnabled(not busy or self._job_kind == "scan")
         for widget in (self.path, self.browse, self.mode, self.setup, self.settings, self.preview):
             widget.setEnabled(not busy)
-        self.backend.setText("Rule-based" if self.config.get("ai_mode_preference") == "rule"
-                             else self.ctx.runtime.backend_label)
+        self.backend.setText(self.ctx.runtime.backend_label)
 
     def _invalidate(self, *_):
         self.plan = None
@@ -146,6 +145,11 @@ class MainWindow(QMainWindow):
             self.scan.setEnabled(False)
             self.status.setText("Stopping…")
             return
+        if not self.ctx.runtime.available:
+            self._invalidate()
+            QMessageBox.warning(self, "Local AI required",
+                                "Install the local AI engine and model using Setup AI before scanning and organizing files.")
+            return
         root = Path(self.path.text().strip()).expanduser()
         valid, reason = validate_root_selection(root)
         if not valid:
@@ -162,7 +166,6 @@ class MainWindow(QMainWindow):
         mode = self.ctx.mode
         shortcuts = self.config.get("shortcuts_movable")
         suffix = self.config.get("duplicate_suffix_allowed")
-        use_ai = self.config.get("ai_mode_preference") != "rule"
         threshold = self.ctx.model_manager.profile(mode)["confidence_threshold"]
         self._invalidate()
         self._show_banner("")
@@ -173,21 +176,21 @@ class MainWindow(QMainWindow):
                                 progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
             if cancelled():
                 raise InterruptedError("Scan stopped")
-            result = Planner(self.ctx.runtime, mode, threshold, shortcuts, status, cancelled, use_ai).plan(inventory)
+            plan = Planner(self.ctx.runtime, mode, threshold, progress_cb=status, cancelled=cancelled).plan(inventory)
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
             report = Validator(root, allow_suffix_on_collision=suffix,
-                               shortcuts_movable=shortcuts).validate_plan(result.plan)
-            result.plan.actions = report.valid_actions
-            result.plan.warnings = report.warnings
-            result.plan.excluded_count = inventory.total_files - len({a.src_rel for a in report.valid_actions})
-            return inventory, result
+                               shortcuts_movable=shortcuts).validate_plan(plan)
+            plan.actions = report.valid_actions
+            plan.warnings = report.warnings
+            plan.excluded_count = inventory.total_files - len({a.src_rel for a in report.valid_actions})
+            return inventory, plan
 
         self._start("scan", operation)
 
     def _apply(self):
-        if not self.plan or not self.plan.actions:
+        if not self.ctx.runtime.available or not self.plan or not self.plan.actions:
             return
         if QMessageBox.question(self, "Apply plan", f"Apply {len(self.plan.actions):,} file operations?",
                                 QMessageBox.Yes | QMessageBox.Cancel) != QMessageBox.Yes:
@@ -252,8 +255,7 @@ class MainWindow(QMainWindow):
         elif worker.stopped or (kind == "scan" and worker.cancel_event.is_set()):
             self.status.setText("Stopped. No new plan was applied.")
         elif kind == "scan":
-            self.inventory, result = worker.result
-            self.plan = result.plan
+            self.inventory, self.plan = worker.result
             self.preview.set_plan(self.inventory, self.plan, self.config.get("shortcuts_movable"))
             self.status.setText(
                 f"{self.inventory.total_files:,} files · {len(self.plan.actions):,} changes · "
@@ -261,8 +263,6 @@ class MainWindow(QMainWindow):
                 f"{self.inventory.error_count:,} scan errors"
             )
             warnings = [warning.message for warning in self.plan.warnings]
-            if result.used_rule_fallback:
-                warnings.insert(0, result.fallback_reason)
             self._show_banner("\n".join(warnings[:5]))
         else:
             result = worker.result
@@ -292,10 +292,11 @@ class MainWindow(QMainWindow):
         self._buttons()
 
     def show_first_run_if_needed(self):
-        if self.ctx.hardware.os_warning:
-            self._show_banner(self.ctx.hardware.os_warning)
-        elif not self.config.get("setup_complete") and not self.config.get("setup_skipped") and not self.ctx.runtime.available:
-            self._setup()
+        if not self.ctx.runtime.available:
+            if self.ctx.hardware.os_warning:
+                self._show_banner(self.ctx.hardware.os_warning)
+            else:
+                self._setup()
 
     def closeEvent(self, event):
         if self.worker:

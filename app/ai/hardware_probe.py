@@ -105,5 +105,5 @@ def probe():
         if version and int(version.split(".")[0]) < 12:
             hardware.os_warning = "Automatic AI installation requires macOS 12 or newer."
     else:
-        hardware.os_warning = "Automatic AI installation is available on Windows and macOS. Rule-based planning is available here."
+        hardware.os_warning = "Automatic AI installation is available on Windows and macOS. A local AI engine and model are required to organize files here."
     return hardware
