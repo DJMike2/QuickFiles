@@ -1,11 +1,7 @@
 """Reuse one model server across planning batches and modes."""
-import logging
-
 from app.ai.llm_server import ContextTooLargeError, LLMServer, LLMServerError
 from app.ai.parser import parse_llm_json, validate_plan_dict
 from app.ai.prompts import SYSTEM_PROMPT, build_planner_prompt, build_verifier_prompt
-
-log = logging.getLogger(__name__)
 
 
 class AIRuntime:
@@ -23,7 +19,7 @@ class AIRuntime:
     def backend_label(self):
         if self._server and self._server.is_running:
             return f"Local AI ({self._server.backend.upper()})"
-        return "Local AI ready" if self.available else "Rule-based"
+        return "Local AI ready" if self.available else "Local AI setup required"
 
     def _generate(self, mode, system, user, status_cb=None, cancelled=None, max_tokens=None):
         if self._mode != mode or self._server is None or not self._server.is_running:
@@ -70,19 +66,16 @@ class AIRuntime:
         for offset in range(0, len(actions), batch_size):
             if cancelled and cancelled():
                 raise InterruptedError("Verification stopped")
-            try:
-                raw = self._generate(
-                    mode, "You review file plans. Return JSON only.",
-                    build_verifier_prompt([a.to_dict() for a in actions[offset:offset + batch_size]]),
-                    status_cb, cancelled, max_tokens=256,
-                )
-                parsed = parse_llm_json(raw)
-                if parsed and isinstance(parsed.get("corrections"), list):
-                    remove.update(str(item["action_id"]) for item in parsed["corrections"]
-                                  if isinstance(item, dict) and item.get("remove") is True and "action_id" in item)
-            except LLMServerError as exc:
-                log.warning("Verification unavailable: %s", exc)
-                break
+            raw = self._generate(
+                mode, "You review file plans. Return JSON only.",
+                build_verifier_prompt([a.to_dict() for a in actions[offset:offset + batch_size]]),
+                status_cb, cancelled, max_tokens=256,
+            )
+            parsed = parse_llm_json(raw)
+            if not parsed or not isinstance(parsed.get("corrections"), list):
+                raise LLMServerError("The local model returned an invalid verification response")
+            remove.update(str(item["action_id"]) for item in parsed["corrections"]
+                          if isinstance(item, dict) and item.get("remove") is True and "action_id" in item)
         return remove
 
     def shutdown(self):

@@ -1,4 +1,4 @@
-"""Optional local AI installation using the shared background worker."""
+"""Required local AI installation using the shared background worker."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout,
@@ -30,7 +30,7 @@ class FirstRunDialog(QDialog):
             f"GPU: {hardware.gpu_name or 'none detected'} ({hardware.backend.upper()})\n\n"
             f"Install llama.cpp and {model['label']} (about {model['size_mb'] / 1000:.1f} GB).\n"
             "After installation, file planning runs on this device.\n"
-            "You can skip installation and use the built-in rules."
+            "The local AI engine and model are required to organize files."
         )
         info.setTextFormat(Qt.PlainText)
         info.setWordWrap(True)
@@ -43,9 +43,9 @@ class FirstRunDialog(QDialog):
         self.progress.setValue(0)
         layout.addWidget(self.progress)
         buttons = QHBoxLayout()
-        self.skip = QPushButton("Use built-in rules")
-        self.skip.clicked.connect(self._skip)
-        buttons.addWidget(self.skip)
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.reject)
+        buttons.addWidget(self.close_button)
         buttons.addStretch()
         self.cancel = QPushButton("Cancel")
         self.cancel.clicked.connect(self._cancel)
@@ -65,11 +65,10 @@ class FirstRunDialog(QDialog):
 
     def _install(self):
         if self.ctx.runtime.available:
-            self.ctx.config.update({"setup_complete": True, "ai_mode_preference": "ai"})
             self.accept()
             return
         self.install.setEnabled(False)
-        self.skip.setEnabled(False)
+        self.close_button.setEnabled(False)
         self.cancel.show()
         self.cancel.setEnabled(True)
         self.ctx.runtime.shutdown()
@@ -100,14 +99,13 @@ class FirstRunDialog(QDialog):
         self.worker = None
         self.cancel.hide()
         self.install.setEnabled(True)
-        self.skip.setEnabled(True)
+        self.close_button.setEnabled(True)
         if worker.error:
             self.status.setText(f"Installation failed: {worker.error}")
             self.install.setText("Retry")
         elif worker.stopped or worker.cancel_event.is_set():
             self.status.setText("Installation cancelled.")
         else:
-            self.ctx.config.update({"setup_complete": True, "ai_mode_preference": "ai"})
             self.status.setText("Installation complete. Local AI is ready.")
             self.progress.setRange(0, 1000)
             self.progress.setValue(1000)
@@ -121,10 +119,6 @@ class FirstRunDialog(QDialog):
             self.worker.cancel()
             self.cancel.setEnabled(False)
             self.status.setText("Cancelling installation…")
-
-    def _skip(self):
-        self.ctx.config.update({"setup_skipped": True, "ai_mode_preference": "rule"})
-        self.accept()
 
     def reject(self):
         if self.worker:
