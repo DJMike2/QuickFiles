@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.gguf
+*.part
+.DS_Store
+Thumbs.db
+
+# Keep local verification tools and reports out of the public source tree.
+/tests/
+/metrics/
+/benchmarks.md
+/comments.md
+/docs/accuracy-benchmark.md
+/docs/organizer-optimization/
+/tools/*
+!/tools/build_scanner.py
