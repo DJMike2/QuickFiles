@@ -66,9 +66,7 @@ class SettingsDialog(QDialog):
 
         ai = QWidget()
         ai_layout = QVBoxLayout(ai)
-        self.ai_enabled = QCheckBox("Use local AI when installed")
-        self.ai_enabled.setChecked(config.get("ai_mode_preference") != "rule")
-        ai_layout.addWidget(self.ai_enabled)
+        ai_layout.addWidget(QLabel("A local AI engine and model are required to organize files."))
         self.model_status = QLabel()
         self.model_status.setWordWrap(True)
         ai_layout.addWidget(self.model_status)
@@ -111,11 +109,10 @@ class SettingsDialog(QDialog):
 
     def _setup(self):
         FirstRunDialog(self.ctx, self).exec()
-        self.ai_enabled.setChecked(self.ctx.config.get("ai_mode_preference") != "rule")
         self._refresh_model()
 
     def _delete(self):
-        if QMessageBox.question(self, "Delete model", "Delete the downloaded AI model? It can be installed again.",
+        if QMessageBox.question(self, "Delete model", "Delete the downloaded AI model? Organizing files will be unavailable until it is installed again.",
                                 QMessageBox.Yes | QMessageBox.Cancel) != QMessageBox.Yes:
             return
         self.ctx.runtime.shutdown()
@@ -124,8 +121,6 @@ class SettingsDialog(QDialog):
         except OSError as exc:
             QMessageBox.warning(self, "Cannot delete model", str(exc))
             return
-        self.ctx.config.set("ai_mode_preference", "rule")
-        self.ai_enabled.setChecked(False)
         self._refresh_model()
 
     def _save(self):
@@ -139,6 +134,5 @@ class SettingsDialog(QDialog):
             "allowed_root": str(root.resolve()), "shortcuts_movable": self.shortcuts.isChecked(),
             "duplicate_suffix_allowed": self.suffix.isChecked(), "max_files_per_scan": self.max_files.value(),
             "exclude_patterns": [line.strip() for line in self.exclusions.toPlainText().splitlines() if line.strip()],
-            "ai_mode_preference": "ai" if self.ai_enabled.isChecked() else "rule",
         })
         self.accept()

@@ -1,6 +1,6 @@
 # QuickFiles
 
-A desktop file organizer with a local AI planner and a built-in rule-based fallback.
+A desktop file organizer that requires a local LLM for organization planning.
 Scan a folder, review the Before/After trees, then apply the plan. Undo restores the
 most recent batch. Files are never deleted by the organizer.
 
@@ -14,12 +14,17 @@ python -m pip install -r requirements.txt
 python -B -m app.main
 ```
 
-`-B` prevents Python from creating `__pycache__` directories. The app works without
-an AI model. **Setup AI** optionally downloads llama.cpp and the original Mistral
+`-B` prevents Python from creating `__pycache__` directories. **Setup AI** downloads
+the required llama.cpp engine and the original Mistral
 Nemo 12B GGUF model (about 7.1 GB). Downloads require internet; planning runs locally.
 Automatic engine installation targets Windows 10+ and macOS 12+, as in the source
-project. Linux can use the rule-based planner; automatic AI installation is unavailable.
+project. Automatic AI installation is unavailable on Linux; a compatible local
+engine and model must be installed before organizing files there.
 GPU acceleration is optional, with CPU fallback.
+
+There is no organization mode without an LLM. If the engine or model is missing,
+scanning for organization requires setup. If the LLM fails during planning or
+verification, no plan is offered to apply.
 
 Choose Fast or Accurate planning, or Auto in Settings. Double-click names in the
 After tree to edit the proposed destination. Settings also contains exclusions,
