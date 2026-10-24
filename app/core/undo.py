@@ -1,0 +1,64 @@
+"""Reverse successful journal entries, retaining conflicts for a later retry."""
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from app.core.blocked_paths import checked_path, resolve_safe
+from app.core.executor import safe_move
+
+
+@dataclass
+class UndoResult:
+    batch_id: int
+    total: int = 0
+    reversed_ok: int = 0
+    skipped: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+class UndoEngine:
+    def __init__(self, root, journal, progress_cb=None):
+        self.root = resolve_safe(root)
+        self.journal = journal
+        self.progress_cb = progress_cb or (lambda current, total, name: None)
+
+    def undo_batch(self, batch_id):
+        batch = self.journal.get_batch_by_id(batch_id)
+        if not batch or batch.undone:
+            raise ValueError("No pending batch to undo")
+        if resolve_safe(Path(batch.root)) != self.root:
+            raise ValueError("Journal root does not match the selected batch")
+        operations = [op for op in batch.ops if op.succeeded and not op.undone]
+        result = UndoResult(batch_id, total=len(operations))
+        for index, operation in enumerate(reversed(operations)):
+            self.progress_cb(index + 1, len(operations), operation.dst_abs)
+            try:
+                self._reverse(operation)
+                self.journal.mark_op_undone(operation.id)
+                result.reversed_ok += 1
+            except (OSError, RuntimeError, ValueError) as exc:
+                result.skipped += 1
+                result.errors.append(str(exc))
+        if not result.skipped:
+            self.journal.mark_batch_undone(batch_id)
+        return result
+
+    def _path(self, absolute):
+        path = Path(absolute)
+        relative = path.relative_to(self.root).as_posix()
+        return checked_path(self.root, relative)
+
+    def _reverse(self, operation):
+        destination = self._path(operation.dst_abs)
+        if operation.op_type == "mkdir":
+            if not operation.dst_existed_pre and destination.exists():
+                destination.rmdir()  # Never remove a directory that now contains files.
+            return
+        if operation.op_type not in {"move", "rename"}:
+            raise ValueError(f"Cannot undo unsupported operation: {operation.op_type}")
+        source = self._path(operation.src_abs)
+        if not destination.is_file():
+            raise FileNotFoundError(f"File is no longer at {destination}")
+        if source.exists() or source.is_symlink():
+            raise FileExistsError(f"Original location is occupied: {source}")
+        source.parent.mkdir(parents=True, exist_ok=True)
+        safe_move(destination, source)
