@@ -2,6 +2,7 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -82,7 +83,7 @@ class SearchTests(unittest.TestCase):
         payload = self.search.search(self.root, 'car repair')
         self.assertEqual(len(self.embeddings.documents), 3)
         self.assertEqual([r['name'] for r in payload['results']], ['b.txt'])
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute('SELECT path FROM search_files').fetchall(), [('b.txt',)])
 
     def test_filters_and_no_matches_have_real_counts(self):
