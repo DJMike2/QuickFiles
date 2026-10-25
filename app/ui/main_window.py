@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QMessageBox, QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from app.constants import APP_NAME
@@ -18,6 +18,7 @@ from app.core.undo import UndoEngine
 from app.core.validator import Validator
 from app.ui.first_run_dialog import FirstRunDialog
 from app.ui.preview_panel import PreviewPanel
+from app.ui.search_panel import SearchPanel
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.theme import apply_theme
 from app.ui.worker import Worker
@@ -40,8 +41,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(6, 4, 6, 0)
+        # Keep file organization and semantic search in separate tabs so the
+        # existing scan/preview/apply workflow stays unchanged.
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+        organize_page = QWidget()
+        organize_layout = QVBoxLayout(organize_page)
+        organize_layout.setContentsMargins(4, 4, 4, 4)
         toolbar = QHBoxLayout()
-        layout.addLayout(toolbar)
+        organize_layout.addLayout(toolbar)
         toolbar.addWidget(QLabel("Folder:"))
         self.path = QLineEdit(self.config.get("allowed_root"))
         self.path.textEdited.connect(self._invalidate)
@@ -75,11 +83,22 @@ class MainWindow(QMainWindow):
         self.banner.setTextFormat(Qt.PlainText)
         self.banner.setWordWrap(True)
         self.banner.hide()
-        layout.addWidget(self.banner)
+        organize_layout.addWidget(self.banner)
         self.preview = PreviewPanel()
         self.preview.planChanged.connect(self._plan_changed)
         self.preview.editRejected.connect(self._edit_rejected)
-        layout.addWidget(self.preview, 1)
+        organize_layout.addWidget(self.preview, 1)
+        # The normal application hides test-only JSON-loading controls.
+        # Standalone SearchPanel() keeps the JSON loader visible for developers.
+        self.search_panel = SearchPanel(self, show_json_loader=False)
+        # Search temporarily mirrors the organizer toolbar buttons. The
+        # copies call these *same* buttons, not duplicate scan/AI logic.
+        self.search_panel.bind_organizer_controls({
+            "Browse": self.browse, "Scan": self.scan, "Apply": self.apply,
+            "Undo": self.undo, "Setup AI": self.setup, "Settings": self.settings,
+        }, self.mode, self.path)
+        self.tabs.addTab(organize_page, "Organize Files")
+        self.tabs.addTab(self.search_panel, "AI Search")
         self.progress = QProgressBar()
         self.progress.setFixedSize(160, 14)
         self.progress.setTextVisible(False)
@@ -108,6 +127,8 @@ class MainWindow(QMainWindow):
         self.scan.setEnabled(not busy or self._job_kind == "scan")
         for widget in (self.path, self.browse, self.mode, self.setup, self.settings, self.preview):
             widget.setEnabled(not busy)
+        # Keep sidebar copies disabled/enabled when a background job starts.
+        self.search_panel.sync_organizer_controls()
         self.backend.setText(self.ctx.runtime.backend_label)
 
     def _invalidate(self, *_):
