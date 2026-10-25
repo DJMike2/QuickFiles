@@ -10,6 +10,8 @@ class ModelManager:
         data_path = Path(__file__).resolve().parents[2] / "models/settings.json"
         data = json.loads(data_path.read_text(encoding="utf-8"))
         self.runtime_settings = data["runtime"]
+        # Search shares the organizer's model file but has its own generation settings.
+        self.search_settings = data["search"]
         self.model_info = data["model"]
         self.model_path = models_dir / self.model_info["filename"]
         self.testing_model_info = data["testing_model"]

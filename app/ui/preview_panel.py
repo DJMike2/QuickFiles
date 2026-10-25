@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from html import escape
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -72,8 +73,9 @@ class DiffTreeModel(QAbstractItemModel):
         if role == Qt.ToolTipRole:
             if node.action:
                 action = node.action
-                return f"{action.src_rel} → {action.dst_rel}\n{action.reason}"
-            return node.rel_path
+                # Reasons now contain literal document excerpts, including possible HTML.
+                return "<qt>" + escape(f"{action.src_rel} → {action.dst_rel}\n{action.reason}").replace("\n", "<br>") + "</qt>"
+            return "<qt>" + escape(node.rel_path) + "</qt>"
         if role == Qt.ForegroundRole:
             colors = {"new": "#55bbff" if self.dark else "#0077bb",
                       "created_dir": "#55e055" if self.dark else "#1a7a1a"}
@@ -231,6 +233,11 @@ class PreviewPanel(QWidget):
         self.headers[1].setText("After")
 
     def set_plan(self, inventory, plan, shortcuts_movable=False, executables_movable=False):
+        if any(a.type != 'mkdir' and a.source_identity is None for a in plan.actions):
+            # Sample/imported previews need the same stale-file protection as AI plans.
+            report = Validator(Path(plan.root), allow_suffix_on_collision=False,
+                shortcuts_movable=shortcuts_movable, executables_movable=executables_movable).validate_plan(plan)
+            plan.actions, plan.warnings = report.valid_actions, report.warnings
         if inventory is not self.inventory:
             self._order = None
             self._displaced = set()
@@ -241,9 +248,10 @@ class PreviewPanel(QWidget):
         before, after = Simulator(Path(inventory.root)).build_trees(
             inventory, plan, self._order, self._displaced,
         )
-        self.headers[1].setText(
-            f"After · {len(plan.actions):,} changes · drag above, below, or into a folder"
-        )
+        held = len(plan.review.get('held', {}))
+        self.headers[1].setText(f"After · {len(plan.actions):,} changes"
+            + (f" · {held:,} held by review" if held else '')
+            + " · drag above, below, or into a folder")
         for model, tree, root in zip(self.models, self.trees, (before, after)):
             model.set_root(root)
             if inventory.total_files < 40:
@@ -442,7 +450,9 @@ class PreviewPanel(QWidget):
     def _commit(self, actions, order=None, displaced=None):
         if self.plan is None or self._pending_edit:
             return False
-        candidate = OrganizationPlan(self.plan.root, actions, list(self.plan.warnings))
+        candidate = OrganizationPlan(self.plan.root, actions, list(self.plan.warnings), review={
+            'user_edited': True, 'original_proposed': self.plan.review.get('proposed'),
+            'original_retained': self.plan.review.get('retained')})
         report = Validator(Path(self.plan.root), allow_suffix_on_collision=False,
                            shortcuts_movable=self.shortcuts_movable,
                            executables_movable=self.executables_movable).validate_plan(candidate)

@@ -23,6 +23,40 @@ EXT_CATEGORY_MAP = {
     for category, extensions in CATEGORY_EXTENSIONS.items()
     for extension in extensions.split()
 }
+# Broad kinds that search can filter by; a file may belong to more than one.
+SEARCH_KINDS = {
+    kind: set(extensions.split()) for kind, extensions in {
+        "image": CATEGORY_EXTENSIONS["Images"],
+        "video": CATEGORY_EXTENSIONS["Videos"],
+        "audio": CATEGORY_EXTENSIONS["Audio"],
+        "document": CATEGORY_EXTENSIONS["Documents"] + " .pdf .tex .epub",
+        "spreadsheet": CATEGORY_EXTENSIONS["Spreadsheets"] + " .tsv",
+        "presentation": CATEGORY_EXTENSIONS["Presentations"],
+        "archive": CATEGORY_EXTENSIONS["Archives"] + " .tgz",
+        "code": CATEGORY_EXTENSIONS["Code"] + " .m .ipynb .ps1 .bat .cmd",
+        "installer": CATEGORY_EXTENSIONS["Installers"],
+        "disk image": ".iso .img .vhd .vhdx .vmdk",
+        "shortcut": ".lnk .url .desktop",
+        "ai model": ".gguf .safetensors .onnx .pt .pth .ckpt",
+    }.items()
+}
+# Words that show a request really asks for a kind, rather than the model guessing one.
+SEARCH_KIND_WORDS = {
+    kind: set(words.split()) for kind, words in {
+        "image": "image photo picture pic",
+        "video": "video movie clip film footage recording",
+        "audio": "audio song music track podcast recording voice",
+        "document": "document doc",
+        "spreadsheet": "spreadsheet sheet excel table workbook",
+        "presentation": "presentation deck powerpoint keynote",
+        "archive": "archive zip compressed",
+        "code": "code script source program python java javascript typescript c++ rust",
+        "installer": "installer setup install app application program",
+        "disk image": "iso disk vm",
+        "shortcut": "shortcut link",
+        "ai model": "model gguf weights checkpoint llm",
+    }.items()
+}
 SHORTCUT_EXTENSIONS = set(".lnk .url".split())
 EXECUTABLE_EXTENSIONS = set(
     ".exe .msi .bat .cmd .ps1 .vbs .com .pif .psm1 .psd1 .wsf .hta .msc .cpl .scr "

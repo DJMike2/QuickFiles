@@ -229,7 +229,10 @@ class MainWindow(QMainWindow):
             if cancelled():
                 raise InterruptedError("Scan stopped")
             plan = Planner(self.ctx.runtime, progress_cb=status, cancelled=cancelled,
-                           shortcuts_movable=shortcuts, executables_movable=executables).plan(inventory)
+                           shortcuts_movable=shortcuts, executables_movable=executables,
+                           allow_suffix_on_collision=suffix,
+                           summary_cache_path=(None if self.config.app_data_dir.is_relative_to(root) else
+                                               self.config.app_data_dir / "organizer_summaries.db")).plan(inventory)
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
@@ -330,7 +333,7 @@ class MainWindow(QMainWindow):
             result = worker.result
             self._invalidate()
             if kind == "apply":
-                self.status.setText(f"{result.succeeded:,} applied · {result.failed:,} failed · {result.skipped:,} skipped")
+                self.status.setText(f"{result.verified:,} applied and verified · {result.failed:,} failed · {result.skipped:,} skipped")
             else:
                 self.status.setText(f"{result.reversed_ok:,} undone · {result.skipped:,} skipped")
             self._show_banner("\n".join(result.errors[:5]))
