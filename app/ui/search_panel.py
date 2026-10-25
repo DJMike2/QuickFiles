@@ -32,7 +32,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
+    QFileDialog, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
@@ -264,24 +264,15 @@ class SearchPanel(QWidget):
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([870, 380])
 
-    def bind_organizer_controls(self, actions: dict, mode: QComboBox,
-                                folder_path: QLineEdit) -> None:
+    def bind_organizer_controls(self, actions: dict, folder_path: QLineEdit) -> None:
         """Make temporary sidebar copies of MainWindow's existing actions."""
         self._source_actions = actions
-        self._source_mode = mode
         self.folder_label = QLabel(folder_path.text())
         self.folder_label.setWordWrap(True)
         self.folder_label.setToolTip(folder_path.text())
         self.organizer_grid.addWidget(self.folder_label, 0, 0, 1, 3)
         folder_path.textChanged.connect(self.folder_label.setText)
         folder_path.textChanged.connect(self.folder_label.setToolTip)
-
-        self.mode_copy = QComboBox()
-        self.mode_copy.addItems([mode.itemText(i) for i in range(mode.count())])
-        self.mode_copy.setCurrentText(mode.currentText())
-        self.mode_copy.currentTextChanged.connect(mode.setCurrentText)
-        mode.currentTextChanged.connect(self.mode_copy.setCurrentText)
-        self.organizer_grid.addWidget(self.mode_copy, 1, 0, 1, 3)
 
         for index, (label, original) in enumerate(actions.items()):
             copy = QPushButton(label)
@@ -295,8 +286,6 @@ class SearchPanel(QWidget):
         for label, original in self._source_actions.items():
             self._action_proxies[label].setEnabled(original.isEnabled())
             self._action_proxies[label].setText(original.text())
-        if hasattr(self, "mode_copy"):
-            self.mode_copy.setEnabled(self._source_mode.isEnabled())
 
     def _request_search(self) -> None:
         query = self.query.text().strip()

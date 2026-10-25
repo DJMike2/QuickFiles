@@ -5,13 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtWidgets import (
-<<<<<<< HEAD
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
-=======
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
->>>>>>> origin/feature/qwen-organizer
+    QMessageBox, QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from app.constants import APP_NAME
@@ -101,7 +96,7 @@ class MainWindow(QMainWindow):
         self.search_panel.bind_organizer_controls({
             "Browse": self.browse, "Scan": self.scan, "Apply": self.apply,
             "Undo": self.undo, "Setup AI": self.setup, "Settings": self.settings,
-        }, self.mode, self.path)
+        }, self.path)
         self.tabs.addTab(organize_page, "Organize Files")
         self.tabs.addTab(self.search_panel, "AI Search")
         self.progress = QProgressBar()
@@ -130,11 +125,7 @@ class MainWindow(QMainWindow):
         self.undo.setEnabled(not busy and self.ctx.journal.get_latest_batch() is not None)
         self.scan.setText("Stop" if busy and self._job_kind == "scan" else "Scan")
         self.scan.setEnabled(not busy or self._job_kind == "scan")
-<<<<<<< HEAD
-        for widget in (self.path, self.browse, self.sample, self.mode, self.setup, self.settings, self.preview):
-=======
-        for widget in (self.path, self.browse, self.setup, self.settings, self.preview):
->>>>>>> origin/feature/qwen-organizer
+        for widget in (self.path, self.browse, self.sample, self.setup, self.settings, self.preview):
             widget.setEnabled(not busy)
         # Keep sidebar copies disabled/enabled when a background job starts.
         self.search_panel.sync_organizer_controls()
