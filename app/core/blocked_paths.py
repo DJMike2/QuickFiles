@@ -20,6 +20,8 @@ _WIN_DRIVE_NAMES = (
 _WIN_SYSTEM = 0x4
 _WIN_CLOUD = 0x1000 | 0x40000 | 0x400000
 _SHELL_NAMES = {"desktop.ini", "thumbs.db", "ehthumbs.db"}
+# Every Windows drive, including storage drives, carries these at its root.
+_WIN_EVERY_DRIVE = {"$recycle.bin", "system volume information", "recovery"}
 
 
 class BlockedPathError(ValueError):
@@ -80,6 +82,8 @@ def is_inside_root(path: Path, root: Path) -> bool:
 def is_blocked(path: Path) -> bool:
     try:
         canonical = resolve_safe(path)
+        if sys.platform == "win32" and len(canonical.parts) > 1 and canonical.parts[1].casefold() in _WIN_EVERY_DRIVE:
+            return True
         return any(canonical.is_relative_to(resolve_safe(root)) for root in blocked_roots())
     except (OSError, RuntimeError, ValueError):
         return True
@@ -185,13 +189,22 @@ def _account_selection_error(root: Path) -> str:
     return ""
 
 
+def _storage_drive(drive: Path) -> bool:
+    """A whole Windows drive may be organized unless it holds the operating system."""
+    if sys.platform != "win32":
+        return False
+    system = os.environ.get("SystemDrive", "C:").rstrip("\\/").casefold()
+    return drive.drive.rstrip("\\/").casefold() != system
+
+
 def validate_root_selection(root: Path) -> tuple[bool, str]:
     try:
         if not root.is_dir():
             return False, f"Folder does not exist: {root}"
         enforce_not_blocked(root)
-        if resolve_safe(root).parent == resolve_safe(root):
-            return False, "Select a folder rather than the filesystem root."
+        canonical = resolve_safe(root)
+        if canonical.parent == canonical and not _storage_drive(canonical):
+            return False, "Select a folder rather than the system drive."
         reason = _account_selection_error(root)
         if reason:
             return False, reason
