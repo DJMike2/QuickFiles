@@ -21,6 +21,7 @@ from app.core.arrival import ScanIndex, is_ignored
 from app.core.blocked_paths import validate_root_selection
 from app.core.executor import Executor
 from app.core.inventory import FileEntry
+from app.core.file_state import identity
 from app.core.planner import Planner
 from app.core.scanner import Scanner
 from app.core.undo import UndoEngine
@@ -336,7 +337,7 @@ class MainWindow(QMainWindow):
                     )
                     files.append({
                         "id": index, "name": path.name, "rel_path": path.name,
-                        "hint": read_content(entry, limit),
+                        "hint": read_content(entry, limit), "source_identity": identity(stat),
                     })
                 status("Asking local AI about the new file…")
                 assigned = self.ctx.runtime.assign_files(
@@ -351,6 +352,7 @@ class MainWindow(QMainWindow):
                     action = PlanAction(
                         str(row["id"]), "move", row["name"], f"{folder}/{row['name']}",
                         category=folder, confidence=1, reason="Local AI matched the file to this folder",
+                        source_identity=row['source_identity'],
                     )
                     if executor.apply([action]).succeeded:
                         moved.append((row["name"], folder))
@@ -438,7 +440,10 @@ class MainWindow(QMainWindow):
             if cancelled():
                 raise InterruptedError("Scan stopped")
             plan = Planner(self.ctx.runtime, progress_cb=status, cancelled=cancelled,
-                           shortcuts_movable=shortcuts, executables_movable=executables).plan(inventory)
+                           shortcuts_movable=shortcuts, executables_movable=executables,
+                           allow_suffix_on_collision=False,
+                           summary_cache_path=(None if self.config.app_data_dir.is_relative_to(root) else
+                                               self.config.app_data_dir / "organizer_summaries.db")).plan(inventory)
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
@@ -555,7 +560,7 @@ class MainWindow(QMainWindow):
             result = worker.result
             self._invalidate()
             if kind == "apply":
-                self.status.setText(f"{result.succeeded:,} applied · {result.failed:,} failed · {result.skipped:,} skipped")
+                self.status.setText(f"{result.verified:,} applied and verified · {result.failed:,} failed · {result.skipped:,} skipped")
             else:
                 self.status.setText(f"{result.reversed_ok:,} undone · {result.skipped:,} skipped")
             self._show_banner("\n".join(result.errors[:5]))

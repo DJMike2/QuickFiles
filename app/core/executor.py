@@ -1,8 +1,7 @@
-"""Apply validated moves and journal the directories they create."""
+"""Apply the approved map with source snapshots, checksums and a persistent undo journal."""
 from __future__ import annotations
 
 import errno
-import hashlib
 import os
 import shutil
 import sys
@@ -12,6 +11,7 @@ from pathlib import Path
 from app.ai.schema import OrganizationPlan
 from app.core.blocked_paths import checked_path, resolve_safe
 from app.core.validator import Validator
+from app.core.file_state import file_hash, identity
 from app.storage import JournalOp
 
 
@@ -22,14 +22,12 @@ class ExecutionResult:
     failed: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
+    verified: int = 0
+    batch_id: int | None = None
 
 
 def _file_hash(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.digest()
+    return file_hash(path)
 
 
 def safe_move(source: Path, destination: Path):
@@ -78,10 +76,11 @@ class Executor:
         self.executables_movable = executables_movable
         self._order = 0
 
-    def _record(self, batch_id, kind, source, destination):
+    def _record(self, batch_id, kind, source, destination, sha256=''):
         operation = JournalOp(
             batch_id, self._order, kind, str(source), str(destination),
             src_existed=source.exists(), dst_existed_pre=destination.exists(),
+            sha256=sha256,
         )
         self._order += 1
         return self.journal.record_op(operation)
@@ -106,13 +105,28 @@ class Executor:
         result = ExecutionResult(total=len(actions))
         if not actions:
             return result
+        if self.cancelled():
+            result.skipped = len(actions)
+            return result
+        # Check the complete approved map before creating a batch or any directory.
+        report = Validator(self.root, allow_suffix_on_collision=False,
+            shortcuts_movable=self.shortcuts_movable,
+            executables_movable=self.executables_movable).validate_plan(OrganizationPlan(str(self.root), actions))
+        if report.rejected_actions:
+            result.failed = len(report.rejected_actions)
+            result.skipped = len(actions) - result.failed
+            result.errors = [f'{a.src_rel or a.dst_rel}: {reason}' for a, reason in report.rejected_actions]
+            return result
+        actions = report.valid_actions
         batch_id, _ = self.journal.begin_batch(str(self.root), len(actions))
+        result.batch_id = batch_id
         for index, action in enumerate(actions):
             if self.cancelled():
                 result.skipped += len(actions) - index
                 break
             self.progress_cb(index + 1, len(actions), action.src_rel or action.dst_rel)
             op_id = None
+            moved = False
             try:
                 # Revalidate edits and changes since preview.
                 report = Validator(
@@ -124,17 +138,46 @@ class Executor:
                 action = report.valid_actions[0]
                 destination = checked_path(self.root, action.dst_rel)
                 source = checked_path(self.root, action.src_rel) if action.type != "mkdir" else destination
+                checksum = ''
+                if action.type != 'mkdir':
+                    checksum = file_hash(source, self.cancelled)
+                    if identity(source.stat()) != action.source_identity:
+                        raise ValueError('Source changed while preparing to move; scan again')
+                if self.cancelled():
+                    raise InterruptedError('Apply stopped before moving the file')
                 self._ensure_parents(batch_id, destination)
-                op_id = self._record(batch_id, action.type, source, destination)
+                op_id = self._record(batch_id, action.type, source, destination, checksum)
                 if action.type == "mkdir":
                     destination.mkdir()
                 else:
+                    # Check again after parent creation/journaling, immediately before mutation.
+                    if identity(source.stat()) != action.source_identity:
+                        raise ValueError('Source changed before moving; scan again')
                     safe_move(source, destination)
+                moved = True
+                # Once a move starts, finish verifying that file even if cancellation arrives.
+                # This keeps the journal truthful and leaves cancellation at a file boundary.
+                if action.type == 'mkdir':
+                    if not destination.is_dir():
+                        raise OSError('Created folder could not be verified')
+                elif (source.exists() or not destination.is_file() or destination.is_symlink()
+                      or file_hash(destination) != checksum):
+                    raise OSError('Destination verification failed; consult the journal before retrying')
                 self.journal.mark_op_success(op_id)
                 result.succeeded += 1
+                result.verified += 1
+            except InterruptedError:
+                result.skipped += len(actions) - index
+                break
             except Exception as exc:
                 if op_id is not None:
-                    self.journal.mark_op_failed(op_id, str(exc))
+                    if moved:
+                        self.journal.mark_op_verification_failed(op_id, str(exc))
+                    else:
+                        self.journal.mark_op_failed(op_id, str(exc))
                 result.failed += 1
                 result.errors.append(f"{action.src_rel or action.dst_rel}: {exc}")
+                if moved:
+                    result.skipped += len(actions) - index - 1
+                    break
         return result

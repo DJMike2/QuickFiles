@@ -11,6 +11,11 @@
     "batch_size": 20,
     "threads": 4
   },
+  "search": {
+    "temperature": 0,
+    "max_tokens": 384,
+    "excerpt_chars": 2000
+  },
   "model": {
     "label": "Qwen3.5-4B Q6_K",
     "filename": "Qwen_Qwen3.5-4B-Q6_K.gguf",
@@ -45,6 +50,12 @@
     "filename": "all-MiniLM-L6-v2-ggml-model-f16.gguf",
     "url": "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/544f204f2eaa2d71361ffc74d6df7170285b286a/all-MiniLM-L6-v2-ggml-model-f16.gguf",
     "size_bytes": 45949216,
-    "sha256": "797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662"
+    "sha256": "797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662",
+    "dimensions": 384,
+    "pooling": "mean",
+    "context_tokens": 2048,
+    "max_chars": 1000,
+    "query_prefix": "",
+    "document_prefix": ""
   }
 }

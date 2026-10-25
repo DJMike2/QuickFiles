@@ -1,0 +1,19 @@
+[
+  {"name":"topic_reuse","description":"Reuse existing subject folders before making parallel topics; existing destinations allow a single matching file","files":[
+    {"path":"Recipes/anchor.txt","text":"Recipe collection. Bread recipe with flour, yeast, salt and water.","stay":true},
+    {"path":"Taxes/anchor.txt","text":"Personal income tax 2025. Federal income tax returns and wage statements.","stay":true},
+    {"path":"unhelpful-a.txt","text":"Bread recipe. Mix flour, yeast and water, let the dough rise, then bake.","cohort":"recipes","existing":"Recipes"},
+    {"path":"unhelpful-b.txt","text":"Soup recipe. Simmer lentils, tomatoes, onion and vegetable stock until cooked.","cohort":"recipes","existing":"Recipes"},
+    {"path":"holiday.txt","text":"Personal income tax 2025. W-2 wage statement and federal income tax withholding.","cohort":"taxes","existing":"Taxes"},
+    {"path":"unique.txt","text":"Piano tuning appointment for a personal upright piano.","stay":true}
+  ]},
+  {"name":"similar_clients","description":"Shared client-name prefixes do not establish the same client; ambiguous Acme identity stays broad or in place","files":[
+    {"path":"Clients/Acme Dental/anchor.txt","text":"Client: Acme Dental. Appointment booking software invoices.","stay":true},
+    {"path":"Clients/Acme Manufacturing/anchor.txt","text":"Client: Acme Manufacturing. Inventory software consulting invoices.","stay":true},
+    {"path":"a.txt","text":"Client: Acme Dental. Invoice AD-61 for appointment booking support.","cohort":"dental","existing":"Clients/Acme Dental"},
+    {"path":"b.txt","text":"Client: Acme Dental. Contract for appointment booking software support.","cohort":"dental","existing":"Clients/Acme Dental"},
+    {"path":"c.txt","text":"Client: Acme Manufacturing. Invoice AM-91 for inventory software consulting.","cohort":"manufacturing","existing":"Clients/Acme Manufacturing"},
+    {"path":"d.txt","text":"Client: Acme Manufacturing. Contract for inventory software support.","cohort":"manufacturing","existing":"Clients/Acme Manufacturing"},
+    {"path":"ambiguous.txt","text":"Client: Acme. Invoice for software support. No department or full company name supplied.","ambiguous":true,"forbidden_scope":"Dental|Manufacturing"}
+  ]}
+]

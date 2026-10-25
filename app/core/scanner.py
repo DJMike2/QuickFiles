@@ -25,7 +25,10 @@ from app.core.naming import relative_parts
 from app.platforms import require_supported_platform
 
 PROJECT_MARKERS = {".git", "package.json", "manifest.json", "pyproject.toml", "requirements.txt",
-                   "Cargo.toml", "go.mod", "CMakeLists.txt", "node_modules", ".venv", "venv", "setup.py"}
+                   "Cargo.toml", "go.mod", "CMakeLists.txt", "node_modules", ".venv", "venv", "setup.py",
+                   ".project", "steam_appid.txt", "UnityPlayer.dll", "unityplayer.dll",
+                   "GameAssembly.dll", "gameassembly.dll", "resources.pak",
+                   "unins000.exe", "Uninstall.exe", "uninstall.exe", "SupportPackages"}
 NATIVE_DIR = Path(__file__).resolve().parent / "native"
 
 

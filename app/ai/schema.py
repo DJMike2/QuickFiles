@@ -13,6 +13,7 @@ class PlanAction:
     category: str = "Misc"
     confidence: float = 0.5
     reason: str = ""
+    source_identity: list[int] | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -29,6 +30,7 @@ class OrganizationPlan:
     actions: list[PlanAction] = field(default_factory=list)
     warnings: list[PlanWarning] = field(default_factory=list)
     excluded_count: int = 0
+    review: dict = field(default_factory=dict)
 
     def to_dict(self):
         return asdict(self)

@@ -46,54 +46,65 @@ class PlanningTests(unittest.TestCase):
         (self.root / "protected.exe").write_bytes(b"protected")
         self.inventory = Scanner(self.root).scan()
 
-    def planner(self, responses):
+    def planner(self, groups, choices):
         manager = SimpleNamespace(is_downloaded=True, runtime_settings=SETTINGS)
         runtime = AIRuntime(SimpleNamespace(is_available=True), manager)
-        server = ScriptedServer(responses)
-        runtime._server = server
-        return Planner(runtime), server
+        runtime.summarize_file = lambda source, **kwargs: {
+            'summary': source, 'subject': 'example', 'identifiers': [], 'quotes': [source]}
+        profiles_seen = []
+        def profiles(rows, *args):
+            profiles_seen.extend(rows)
+            return [{'id': row['id'], 'description': 'example documents', 'scope_kind': 'topic',
+                     'scope': [], 'topic': 'example', 'quote': row['evidence'].splitlines()[0]}
+                    for row in rows]
+        runtime.profile_items = profiles
+        runtime.propose_groups = lambda *args: groups
+        from collections import deque
+        choices = deque(choices)
+        def choose(file, destinations, *args):
+            folder = choices[0] if choices else ''
+            if folder == 'Sorted' and folder not in {d['path'] for d in destinations}:
+                return {'folder': '', 'match': 'uncertain', 'reason': 'Existing folder does not match', 'evidence': ''}
+            if choices:
+                choices.popleft()
+            return {'folder': folder, 'match': 'clear' if folder else 'uncertain',
+                    'reason': 'Shared example content', 'evidence': 'example'}
+        runtime.choose_destination = choose
+        runtime.review_destination = lambda files, *args: {f['id']: {'verdict': 'keep',
+            'reason': 'The independent fixture judge agrees on example content', 'evidence': 'example'} for f in files}
+        return Planner(runtime), profiles_seen
 
     def test_only_loose_files_and_valid_folders_are_used(self):
-        folders = json.dumps({"folders": [
-            {"path": "Sorted", "holds": "related text"},
-            {"path": "Project/Injected", "holds": "unsafe"},
-            {"path": "../escape", "holds": "unsafe"},
-        ]})
-        planner, server = self.planner([folders, "1:2\n2:2\n3:0\n"])
+        groups = [{'path': path, 'purpose': 'example documents', 'members': [1, 2]}
+                  for path in ['Sorted', 'Project/Injected', '../escape']]
+        planner, seen = self.planner(groups, ['Sorted', 'Sorted', ''])
         plan = planner.plan(self.inventory)
         self.assertEqual([(a.src_rel, a.dst_rel) for a in plan.actions],
-                         [("alpha.txt", "Sorted/alpha.txt"), ("beta.txt", "Sorted/beta.txt")])
-        self.assertEqual(self.inventory.protected_projects, ["Project"])
-        self.assertFalse(any(entry.rel_path.startswith("Project/") for entry in self.inventory.entries))
+                         [('alpha.txt', 'Sorted/alpha.txt'), ('beta.txt', 'Sorted/beta.txt')])
+        self.assertEqual(self.inventory.protected_projects, ['Project'])
+        self.assertFalse(any(entry.rel_path.startswith('Project/') for entry in self.inventory.entries))
         self.assertEqual(len(plan.warnings), 2)
-        self.assertEqual(len(server.requests), 2)
-        self.assertEqual([r['name'] for r in server.requests[0][1]['loose_files']],
-                         ['alpha.txt', 'beta.txt', 'unknown.bin'])
+        self.assertFalse(any('source.js' in row['evidence'] for row in seen))
 
     def test_new_singleton_is_kept_but_existing_singleton_is_allowed(self):
-        folders = '{"folders":[{"path":"Sorted","holds":"related text"}]}'
-        planner, _ = self.planner([folders, "1:2\n2:0\n3:0\n", '{"folders":[]}'])
+        group = [{'path': 'Sorted', 'purpose': 'example', 'members': [1, 2]}]
+        planner, _ = self.planner(group, ['Sorted', '', ''])
         self.assertEqual(planner.plan(self.inventory).actions, [])
-        planner, _ = self.planner(['{"folders":[]}', "1:1\n2:0\n3:0\n", '{"folders":[]}'])
-        self.assertEqual([a.dst_rel for a in planner.plan(self.inventory).actions], ["Existing/alpha.txt"])
+        planner, _ = self.planner([], ['Existing', '', ''])
+        self.assertEqual([a.dst_rel for a in planner.plan(self.inventory).actions], ['Existing/alpha.txt'])
 
-    def test_one_leftover_pass_uses_the_same_destination_ids(self):
-        planner, server = self.planner([
-            '{"folders":[]}', "1:0\n2:0\n3:0\n",
-            '{"folders":[{"path":"Sorted","holds":"related text"}]}', "1:2\n2:2\n3:0\n",
-        ])
+    def test_groups_need_two_real_supporting_ids(self):
+        groups = [{'path': 'Invented', 'purpose': 'example', 'members': [1, 999]}]
+        planner, _ = self.planner(groups, ['', '', ''])
         plan = planner.plan(self.inventory)
-        self.assertEqual(len(plan.actions), 2)
-        self.assertEqual(len(server.requests), 4)
-        self.assertEqual(server.requests[2][1]['already_planned'], ['Existing'])
+        self.assertNotIn('Invented', planner.destinations)
+        self.assertEqual(plan.actions, [])
+        self.assertTrue(plan.warnings)
 
-    def test_missing_or_reordered_assignments_abort_without_a_partial_plan(self):
-        for response in ("1:1\n", "2:1\n1:1\n3:0\n", "1:999\n2:0\n3:0\n"):
-            with self.subTest(response=response):
-                planner, server = self.planner(['{"folders":[]}', response])
-                with self.assertRaises(LLMServerError):
-                    planner.plan(self.inventory)
-                self.assertFalse(server.is_running)
+    def test_assignment_cannot_escape_compatible_destinations(self):
+        planner, _ = self.planner([], ['../escape'])
+        with self.assertRaises(LLMServerError):
+            planner.plan(self.inventory)
 
     def test_default_model_is_4b_and_a_truncated_download_is_not_ready(self):
         manager = ModelManager(self.root)
@@ -103,14 +114,14 @@ class PlanningTests(unittest.TestCase):
         self.assertFalse(manager.is_downloaded)
 
     def test_executable_permission_remains_separate_from_shortcut_permission(self):
-        planner, _ = self.planner(['{"folders":[]}', '1:0\n2:0\n3:1\n4:0\n', '{"folders":[]}'])
+        planner, _ = self.planner([], ['', '', '', ''])
         planner.executables_movable = True
-        plan = planner.plan(self.inventory)
-        self.assertEqual([action.src_rel for action in plan.actions], ['protected.exe'])
-        planner, server = self.planner(['{"folders":[]}', '1:0\n2:0\n3:0\n', '{"folders":[]}'])
+        planner.plan(self.inventory)
+        self.assertIn('protected.exe', planner.prepared.summaries)
+        planner, _ = self.planner([], ['', '', ''])
         planner.shortcuts_movable = True
         planner.plan(self.inventory)
-        self.assertNotIn('protected.exe', [row['name'] for row in server.requests[0][1]['loose_files']])
+        self.assertNotIn('protected.exe', planner.prepared.summaries)
 
     def test_engine_turns_thinking_off_and_rejects_token_limit_answers(self):
         server = LLMServer(None, self.root/'unused.gguf', SETTINGS)

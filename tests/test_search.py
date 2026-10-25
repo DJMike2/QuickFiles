@@ -15,7 +15,8 @@ from PySide6.QtWidgets import QApplication, QPushButton
 from PySide6.QtCore import QCoreApplication, QEvent
 
 from app.ai.llm_server import LLMServerError
-from app.core.search import FileSearch
+from app.ai.runtime import AIRuntime
+from app.core.search import FileSearch, keyword_pattern, readable
 from app.ui.search_panel import SearchPanel
 from app.ui.main_window import MainWindow
 from app.config import AppConfig
@@ -26,10 +27,11 @@ class Rewriter:
     available = True
 
     def __init__(self):
+        self.topic = 'automobile repair'
         self.filters = {'extensions': [], 'exclude_extensions': [], 'exclude_terms': []}
 
     def rewrite_query(self, query, status, cancelled):
-        return {'query': 'automobile repair', 'answer': 'Found 9999 files', **self.filters}
+        return {'query': self.topic, 'answer': 'Found 9999 files', **self.filters}
 
 
 class Embeddings:
@@ -39,14 +41,16 @@ class Embeddings:
     def __init__(self):
         self.documents = []
 
-    def embed(self, texts, *args):
+    def embed(self, texts, *args, query=False):
         rows = []
         for text in texts:
             if '\n' in text:
                 self.documents.append(text)
             lower = text.lower()
-            rows.append([1., 0., 0.] if any(word in lower for word in ('car', 'automobile', 'brakes'))
-                        else [0., 1., 0.])
+            if any(word in lower for word in ('car', 'automobile', 'brakes')):
+                rows.append([1., 0., 0.])
+            else:
+                rows.append([0., 0., 1.] if 'pasta' in lower else [0., 1., 0.])
         return np.asarray(rows, dtype=np.float32)
 
 
@@ -92,9 +96,37 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(payload['results'], [])
         self.assertEqual(payload['matched_files'], 0)
         self.assertTrue(payload['answer'].startswith('No close matches'))
+        # Exclusions apply to names: a.txt only mentions brakes in its text, so it stays.
+        (self.root/'brakes_manual.txt').write_text('car brakes repair manual')
         self.rewriter.filters['extensions'] = ['.txt']
         self.rewriter.filters['exclude_terms'] = ['brakes']
-        self.assertEqual(self.search.search(self.root, 'car repair excluding brakes')['matched_files'], 0)
+        payload = self.search.search(self.root, 'car repair excluding brakes')
+        self.assertEqual([row['name'] for row in payload['results']], ['a.txt'])
+        self.assertIn('excluding brakes', payload['answer'])
+
+    def test_metadata_only_requests_filter_and_sort_without_a_topic(self):
+        (self.root/'big.bin').write_bytes(b'x' * 3 * 1024 * 1024)
+        (self.root/'bigger.bin').write_bytes(b'x' * 5 * 1024 * 1024)
+        self.rewriter.topic = ''
+        self.rewriter.filters.update(min_size_mb=2., sort='largest')
+        payload = self.search.search(self.root, 'files over 2 MB, biggest first')
+        self.assertEqual([row['name'] for row in payload['results']], ['bigger.bin', 'big.bin'])
+        self.assertGreater(payload['results'][0]['score'], payload['results'][1]['score'])
+        self.assertIn('larger than 2 MB; largest first', payload['answer'])
+
+    def test_names_are_split_and_abbreviations_spelled_out_for_keywords(self):
+        self.assertEqual(readable('CMPSC473_PracticeMidterm'), 'CMPSC 473 Practice Midterm')
+        self.assertEqual(readable('hw7soln'), 'hw 7 soln / homework 7 solution')
+        self.assertTrue(keyword_pattern('homework 2').search(readable('HW2_final').casefold()))
+        self.assertFalse(keyword_pattern('homework 2').search('homework 21'))
+        self.assertTrue(keyword_pattern('stats').search('math stat 415'))
+        self.assertTrue(keyword_pattern('problem sets').search('problem_set_2'))
+        self.assertFalse(keyword_pattern('hw').search('show notes'))
+        (self.root/'HW6.txt').write_text('problem 1')
+        self.rewriter.topic = 'homework'
+        self.rewriter.filters['keywords'] = ['homework']
+        payload = self.search.search(self.root, 'homework')
+        self.assertEqual([row['name'] for row in payload['results']], ['HW6.txt'])
 
     def test_total_count_is_distinct_from_ten_displayed_results(self):
         for i in range(11):
@@ -132,6 +164,53 @@ class SearchTests(unittest.TestCase):
         self.rewriter.available = False
         with self.assertRaises(LLMServerError):
             self.search.search(self.root, 'car repair')
+
+
+class ScriptedServer:
+    is_running = True
+
+    def __init__(self, response):
+        self.response = response
+
+    def chat(self, *args, **kwargs):
+        return self.response
+
+    def stop(self):
+        pass
+
+
+class SearchPlanTests(unittest.TestCase):
+    PLAN = {'query': 'resume', 'keywords': ['Resume', 'cv', 'resume'], 'kinds': ['document', 'image'],
+            'extensions': ['pdf', '*.exe'], 'exclude_extensions': ['.zip'], 'exclude_terms': ['draft'],
+            'min_size_mb': 5, 'max_size_mb': -1, 'modified_after': '2026-10-25', 'modified_before': 'soon',
+            'sort': 'newest'}
+
+    def plan(self, request, **changes):
+        manager = SimpleNamespace(runtime_settings={'max_tokens': 64, 'temperature': .2},
+                                  search_settings={'max_tokens': 64, 'temperature': 0})
+        runtime = AIRuntime(SimpleNamespace(is_available=True), manager)
+        runtime._server = ScriptedServer(__import__('json').dumps({**self.PLAN, **changes}))
+        return runtime.rewrite_query(request)
+
+    def test_filters_the_request_never_asked_for_are_dropped(self):
+        plan = self.plan('my resume')
+        self.assertEqual(plan['keywords'], ['resume', 'cv'])
+        self.assertEqual((plan['kinds'], plan['extensions']), ([], []))
+        self.assertEqual((plan['exclude_terms'], plan['exclude_extensions']), ([], []))
+        self.assertEqual((plan['min_size_mb'], plan['modified_after'], plan['sort']), (0, '', 'relevance'))
+
+    def test_filters_the_request_names_are_kept_and_validated(self):
+        plan = self.plan('newest resume pdf documents over 5 MB since last week, no drafts or zips')
+        self.assertEqual((plan['kinds'], plan['extensions']), (['document'], ['.pdf']))
+        self.assertEqual((plan['exclude_terms'], plan['exclude_extensions']), (['draft'], ['.zip']))
+        self.assertEqual((plan['min_size_mb'], plan['max_size_mb']), (5., 0.))
+        self.assertEqual((plan['modified_after'], plan['modified_before']), ('2026-10-25', ''))
+        self.assertEqual(plan['sort'], 'newest')
+
+    def test_a_wanted_word_is_never_also_excluded(self):
+        plan = self.plan('homework solutions, not drafts', query='homework solutions',
+                         keywords=['homework', 'solution'], exclude_terms=['solution', 'draft'])
+        self.assertEqual(plan['exclude_terms'], ['draft'])
 
 
 class SearchPanelTests(unittest.TestCase):

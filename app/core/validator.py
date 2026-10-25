@@ -12,8 +12,9 @@ from app.ai.schema import PlanWarning
 from app.constants import (
     EXECUTABLE_EXTENSIONS, LIBRARY_EXTENSIONS, LIVE_DATA_EXTENSIONS, SHORTCUT_EXTENSIONS,
 )
-from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
+from app.core.blocked_paths import checked_path, enforce_project_boundary, resolve_safe, validate_root_selection
 from app.core.naming import relative_parts
+from app.core.file_state import identity
 
 
 @dataclass
@@ -27,8 +28,10 @@ _PROJECT_MARKERS = (".git", "package.json", "pyproject.toml", "Cargo.toml", "go.
 
 
 class Validator:
-    def __init__(self, root: Path, *, shortcuts_movable=False, executables_movable=False):
+    def __init__(self, root: Path, *, shortcuts_movable=False, executables_movable=False,
+                 allow_suffix_on_collision=False):
         self.root = resolve_safe(root)
+        self.allow_suffix_on_collision = allow_suffix_on_collision
         self.shortcuts_movable = shortcuts_movable
         self.executables_movable = executables_movable
 
@@ -42,6 +45,8 @@ class Validator:
             raise ValueError("Moving shortcuts is disabled")
         if suffix in EXECUTABLE_EXTENSIONS and not self.executables_movable:
             raise ValueError("Moving executables is disabled")
+        if sys.platform != 'win32' and source.stat().st_mode & 0o111 and not self.executables_movable:
+            raise ValueError('Moving executable files requires explicit opt-in')
 
     def _project_warning(self):
         try:
@@ -82,6 +87,7 @@ class Validator:
                     raise ValueError("Invalid confidence")
                 action.dst_rel = "/".join(relative_parts(action.dst_rel))
                 destination = checked_path(self.root, action.dst_rel)
+                enforce_project_boundary(self.root, destination)
                 if action.type != "mkdir":
                     action.src_rel = "/".join(relative_parts(action.src_rel))
                     source = checked_path(self.root, action.src_rel)
@@ -90,12 +96,28 @@ class Validator:
                     if key(action.src_rel) in sources:
                         raise ValueError("More than one operation uses this source")
                     self._reject_immovable(source)
+                    enforce_project_boundary(self.root, source)
+                    snapshot = identity(source.stat())
+                    if action.source_identity is not None and action.source_identity != snapshot:
+                        raise ValueError('Source changed since preview; scan again')
+                    action.source_identity = snapshot
                     if key(action.src_rel) == key(action.dst_rel):
                         raise ValueError("Source and destination are identical")
                     if action.type == "move" and PurePosixPath(action.src_rel).parent == PurePosixPath(action.dst_rel).parent:
                         raise ValueError("A move must change the containing folder")
                 if occupied(action.dst_rel):
-                    raise ValueError(f"Destination already exists: {action.dst_rel}")
+                    if action.type == 'mkdir' or not self.allow_suffix_on_collision:
+                        raise ValueError(f"Destination already exists: {action.dst_rel}")
+                    # Explicit legacy/tooling opt-in; the app rejects collisions by default.
+                    original_path = PurePosixPath(action.dst_rel)
+                    for number in range(1, 100_000):
+                        candidate = str(original_path.with_name(f"{original_path.stem} ({number}){original_path.suffix}"))
+                        if not occupied(candidate):
+                            action.dst_rel = candidate
+                            destination = checked_path(self.root, candidate)
+                            break
+                    else:
+                        raise ValueError('Too many destination collisions')
                 for parent in destination.parents:
                     if parent == self.root:
                         break
