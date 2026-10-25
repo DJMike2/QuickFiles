@@ -32,12 +32,14 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QFileDialog, QFrame, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+    QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from app.ui.search_graph import SearchGraphWidget
+
+QUERY_LIMIT = 120
+SIDEBAR_WIDTH = 340
 
 
 class SearchPanel(QWidget):
@@ -51,12 +53,10 @@ class SearchPanel(QWidget):
         self._busy = False
         self._external_busy = False
         self.show_json_loader = show_json_loader
-        self._hovered_file_path = ""
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(5, 5, 5, 5)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        outer.addWidget(splitter)
+        outer.setSpacing(6)
 
         self.graph = SearchGraphWidget(open_files_on_click=False)
         self.graph.file_clicked.connect(self._open_file)
@@ -64,14 +64,33 @@ class SearchPanel(QWidget):
         self.graph.results_displayed.connect(self._update_response)
         self.graph.history_view_changed.connect(self._history_view_changed)
         self.graph.file_hovered.connect(self._update_file_preview)
-        splitter.addWidget(self.graph)
+        outer.addWidget(self.graph, 1)
 
-        # The right column is split into two independent, resizable panels:
-        # file metadata on top and the compact one-turn search chat below.
-        right_column = QSplitter(Qt.Orientation.Vertical)
-        right_column.setChildrenCollapsible(False)
-        right_column.setHandleWidth(8)
-        splitter.addWidget(right_column)
+        # Fixed-width column: file details on top, the one-turn search chat below.
+        right = QWidget()
+        right.setFixedWidth(SIDEBAR_WIDTH)
+        right_column = QVBoxLayout(right)
+        right_column.setContentsMargins(0, 0, 0, 0)
+        right_column.setSpacing(6)
+        outer.addWidget(right)
+
+        # The search folder lives in the main toolbar; standalone panels keep it here.
+        self.scope_bar = QWidget()
+        scope_layout = QHBoxLayout(self.scope_bar)
+        scope_layout.setContentsMargins(0, 0, 0, 0)
+        scope_layout.setSpacing(6)
+        scope_label = QLabel("Search in:")
+        scope_label.setStyleSheet("font-weight:600;")
+        scope_layout.addWidget(scope_label)
+        self.folder = QLineEdit()
+        self.folder.setMinimumWidth(200)
+        self.folder.setPlaceholderText("Folder to search…")
+        self.folder.setToolTip("Everything inside this folder and its subfolders is searched")
+        scope_layout.addWidget(self.folder, 1)
+        self.browse_button = QPushButton("Browse…")
+        self.browse_button.setFixedHeight(28)
+        self.browse_button.clicked.connect(self._browse)
+        scope_layout.addWidget(self.browse_button)
 
         metadata = QFrame()
         metadata.setObjectName("fileMetadataPanel")
@@ -89,7 +108,7 @@ class SearchPanel(QWidget):
             QFrame#fileMetadataPanel QPushButton:hover {background: #405c7e;}
             QFrame#fileMetadataPanel QPushButton:disabled {color: #8292aa;}
         """)
-        metadata.setMinimumHeight(200)
+        metadata.setFixedHeight(245)
         meta_frame_layout = QVBoxLayout(metadata)
         meta_frame_layout.setContentsMargins(14, 13, 14, 13)
         meta_frame_layout.setSpacing(7)
@@ -136,11 +155,6 @@ class SearchPanel(QWidget):
         meta_rows.addStretch(1)
         meta_scroll.setWidget(meta_content)
         meta_frame_layout.addWidget(meta_scroll, 1)
-
-        self.meta_open_button = QPushButton("Open file")
-        self.meta_open_button.setEnabled(False)
-        self.meta_open_button.clicked.connect(self._open_hovered_file)
-        meta_frame_layout.addWidget(self.meta_open_button)
         right_column.addWidget(metadata)
 
         sidebar = QFrame()
@@ -171,7 +185,6 @@ class SearchPanel(QWidget):
             QFrame#searchChatSidebar QPushButton:hover {background: #405c7e;}
             QFrame#searchChatSidebar QPushButton:disabled {color: #8996a9;}
         """)
-        sidebar.setMinimumHeight(220)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(14, 12, 14, 12)
         side.setSpacing(7)
@@ -179,7 +192,7 @@ class SearchPanel(QWidget):
         heading = QLabel("AI File Search")
         heading.setStyleSheet("font-size: 18px; font-weight: 700;")
         side.addWidget(heading)
-        tip = QLabel("Search your files by meaning, not just filename.")
+        tip = QLabel("Describe what a file is about, or type part of its name.")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#a9bcd6; font-size:11px;")
         side.addWidget(tip)
@@ -205,37 +218,31 @@ class SearchPanel(QWidget):
         )
         chat_rows.addWidget(self.latest_prompt)
 
-        self.response = QLabel("Choose a folder, then describe the files you want to find.")
+        self.response = QLabel("Pick a folder in the top bar, then describe the file you want, "
+                               "by topic or by name.")
         self.response.setTextFormat(Qt.TextFormat.PlainText)
         self.response.setWordWrap(True)
         self.response.setStyleSheet(
             "background:#26354b; color:#f1f5f9; border-radius:10px; padding:11px;"
         )
         chat_rows.addWidget(self.response)
-
-        scope = QGroupBox("Search folder")
-        scope_layout = QHBoxLayout(scope)
-        self.folder = QLineEdit()
-        self.folder.setPlaceholderText("Select the folder to search…")
-        scope_layout.addWidget(self.folder, 1)
-        self.browse_button = QPushButton("Browse…")
-        self.browse_button.clicked.connect(self._browse)
-        scope_layout.addWidget(self.browse_button)
         chat_rows.addStretch(1)
         chat_scroll.setWidget(chat_content)
         side.addWidget(chat_scroll, 1)
 
         # The footer has its own spacing, so Load JSON and Send cannot overlap.
         footer = QWidget(sidebar)
+        footer.setObjectName("searchFooter")
+        footer.setStyleSheet("QWidget#searchFooter {background: transparent;}")
         footer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         footer_layout = QVBoxLayout(footer)
         footer_layout.setContentsMargins(0, 5, 0, 0)
         footer_layout.setSpacing(8)
-        footer_layout.addWidget(scope)
 
         # This is deliberately the only testing control. In the full app,
         # MainWindow passes show_json_loader=False so users never see it.
         if show_json_loader:
+            footer_layout.addWidget(self.scope_bar)
             self.json_button = QPushButton("Load JSON…")
             self.json_button.clicked.connect(self._load_json)
             self.json_button.setMinimumHeight(34)
@@ -245,8 +252,10 @@ class SearchPanel(QWidget):
         input_row.setSpacing(7)
         self.query = QLineEdit()
         self.query.setPlaceholderText("Ask about your files…")
+        self.query.setMaxLength(QUERY_LIMIT)
         self.query.setMinimumHeight(38)
         self.query.returnPressed.connect(self._request_search)
+        self.query.textChanged.connect(self._count_query)
         input_row.addWidget(self.query, 1)
         self.search_button = QPushButton("Send")
         self.search_button.setMinimumWidth(65)
@@ -261,16 +270,18 @@ class SearchPanel(QWidget):
         self.cancel_button.hide()
         input_row.addWidget(self.cancel_button)
         footer_layout.addLayout(input_row)
+        self.query_count = QLabel()
+        self.query_count.setAlignment(Qt.AlignmentFlag.AlignRight)
+        footer_layout.addWidget(self.query_count)
+        self._count_query("")
         side.addWidget(footer)
 
-        right_column.addWidget(sidebar)
-        right_column.setStretchFactor(0, 1)
-        right_column.setStretchFactor(1, 1)
-        right_column.setSizes([350, 350])
+        right_column.addWidget(sidebar, 1)
 
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([870, 380])
+    def _count_query(self, text):
+        near = len(text) >= QUERY_LIMIT - 20
+        self.query_count.setText(f"{len(text)}/{QUERY_LIMIT}")
+        self.query_count.setStyleSheet(f"color:{'#ffd060' if near else '#8fa8ca'}; font-size:10px;")
 
     def _browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose a search folder", self.folder.text())
@@ -355,14 +366,12 @@ class SearchPanel(QWidget):
         (size_bytes, modified, metadata) when supplied and show placeholders.
         """
         if not isinstance(record, dict):
-            self._hovered_file_path = ""
             self.meta_file_name.setText("No file selected")
             self.meta_type.setText("Type: —")
             self.meta_size.setText("Size: —")
             self.meta_modified.setText("Last modified: —")
             self.meta_location.setText("Location: —")
             self.meta_availability.setText("Hover over a result circle to see file information.")
-            self.meta_open_button.setEnabled(False)
             return
 
         path = str(record.get("path") or "")
@@ -390,20 +399,15 @@ class SearchPanel(QWidget):
             except OSError:
                 pass
 
-        self._hovered_file_path = path if available else ""
         self.meta_file_name.setText(name)
         self.meta_type.setText("Type: " + file_type.upper())
         self.meta_size.setText("Size: " + self._format_file_size(raw_size))
         self.meta_modified.setText("Last modified: " + self._format_modified(raw_modified))
         self.meta_location.setText("Location: " + (path or "—"))
         self.meta_availability.setText(
-            "Ready to open" if available else "File not accessible here (sample or moved file)."
+            "Click its circle to open it." if available
+            else "File not accessible here (sample or moved file)."
         )
-        self.meta_open_button.setEnabled(available)
-
-    def _open_hovered_file(self) -> None:
-        if self._hovered_file_path:
-            self._open_file(self._hovered_file_path)
 
     def _restore_query(self, query: str) -> None:
         self.query.setText(query)

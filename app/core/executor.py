@@ -114,10 +114,9 @@ class Executor:
             self.progress_cb(index + 1, len(actions), action.src_rel or action.dst_rel)
             op_id = None
             try:
-                # Revalidate edits and changes since preview, without silently suffixing paths.
+                # Revalidate edits and changes since preview.
                 report = Validator(
-                    self.root, allow_suffix_on_collision=False,
-                    shortcuts_movable=self.shortcuts_movable,
+                    self.root, shortcuts_movable=self.shortcuts_movable,
                     executables_movable=self.executables_movable,
                 ).validate_plan(OrganizationPlan(str(self.root), [action]))
                 if report.rejected_actions:
