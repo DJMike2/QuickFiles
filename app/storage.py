@@ -22,6 +22,7 @@ class JournalOp:
     error_msg: str = ""
     id: int = 0
     undone: bool = False
+    sha256: str = ""
 
 
 @dataclass
@@ -61,6 +62,8 @@ class Journal:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(journal_op)")}
         if "undone" not in columns:
             connection.execute("ALTER TABLE journal_op ADD COLUMN undone INTEGER DEFAULT 0")
+        if "sha256" not in columns:
+            connection.execute("ALTER TABLE journal_op ADD COLUMN sha256 TEXT DEFAULT ''")
         connection.commit()
 
     def connection(self):
@@ -95,9 +98,9 @@ class Journal:
         # Commit before changing the filesystem, rather than at the end of a batch.
         return self._write(
             """INSERT INTO journal_op(batch_id,op_order,op_type,src_abs,dst_abs,
-               src_existed,dst_existed_pre,error_msg) VALUES(?,?,?,?,?,?,?,?)""",
+               src_existed,dst_existed_pre,error_msg,sha256) VALUES(?,?,?,?,?,?,?,?,?)""",
             (op.batch_id, op.op_order, op.op_type, op.src_abs, op.dst_abs,
-             op.src_existed, op.dst_existed_pre, "pending"),
+             op.src_existed, op.dst_existed_pre, "pending", op.sha256),
         )
 
     def mark_op_success(self, op_id):
@@ -105,6 +108,10 @@ class Journal:
 
     def mark_op_failed(self, op_id, message):
         self._write("UPDATE journal_op SET succeeded=0,error_msg=? WHERE id=?", (message, op_id))
+
+    def mark_op_verification_failed(self, op_id, message):
+        # The move happened and must remain visible to undo/recovery.
+        self._write("UPDATE journal_op SET succeeded=1,error_msg=? WHERE id=?", (message, op_id))
 
     def mark_op_undone(self, op_id):
         self._write("UPDATE journal_op SET undone=1 WHERE id=?", (op_id,))

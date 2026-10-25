@@ -22,25 +22,37 @@ startup fails. Downloads require internet; filenames and document excerpts stay
 on this computer during planning.
 
 There is no organizer without an LLM. Missing engine/model files require setup;
-invalid or unfinished model responses abort planning.
+invalid catalog/group responses abort planning; unverifiable individual matches
+leave the affected file in place.
 
 Planning uses the tested prompts and settings in `app/ai/prompts.py` and
 `models/settings.json`:
 
 - Thinking off; temperature 0.2, top_p 0.8, top_k 20, min_p 0, seed 42.
-- An 8,192-token context, four CPU threads and batches of 20 files.
-- One shared folder plan, constrained `file_id:folder_id` assignments and one
-  additional pass for files that did not fit.
+- An 8,192-token context and four CPU threads. Evidence comparisons use temperature 0.
 - Only loose top-level files are candidates. Existing organized files stay put;
   project/application folders are excluded from traversal and destinations.
-- Bounded text excerpts from text, PDF and Office files, plus ZIP entry names.
-  PDFs use pdftotext when available, with pypdf as a portable first-page fallback.
-- New folders need at least two assigned files. Uncertain files can remain in place.
+- Preparation reads bounded text/PDF/Office evidence and builds a grounded summary.
+  Literal course/client headings and known filename-only formats use direct evidence;
+  other summaries select passages through the local model. Python verifies the
+  passages. Content takes precedence over misleading filenames. Summaries retain
+  read limitations and reuse an identity/evidence/model-aware local cache.
+- Steps 6–8 describe existing destinations, find compatible shared subjects, and
+  match individual files with a reason and supporting quote. Explicit courses and
+  full client identities stay separate; suitable existing destinations take priority.
+- Independent review challenges semantic matches without seeing the first judge's
+  reasoning. Python rechecks identities, kinds, file changes and the complete map.
+  Rejected/ungrounded matches stay in place, and new singleton groups are pruned.
+- Apply preflights the displayed map and verifies every moved file with SHA-256.
+  New journal entries retain checksums; undo preserves changed or occupied files.
+- New folders need at least two actual assigned files. Unreadable files permit
+  broad grouping; uncertain subjects and changed files stay in place.
 
-The 1,024-token folder-planning budget and compact assignment budgets are fixed
-internally. The model does not supply confidence percentages. Relative paths,
-protected locations and destination collisions are validated before preview and
-again before applying. Double-click names in the After tree to edit a proposal.
+The model does not supply confidence percentages. Relative paths, protected
+locations and destination collisions are validated before preview and again
+before applying. Double-click names in the After tree to edit a proposal.
+
+The [ordered organizer process](docs/organizer-process.md) documents the organizer pipeline.
 
 Preferences, logs, engines, models and the SQLite undo journal live outside the
 source tree:

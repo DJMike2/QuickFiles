@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from html import escape
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -28,7 +29,7 @@ STRUCK = {"removed"}
 
 def _tooltip(node, after):
     action = node.action
-    if node.diff_state == "new" and action:
+    if action and not node.is_dir:
         lines = ["🔵 Moved here", f"  From:  {action.src_rel}", f"  To:    {action.dst_rel}"]
         if action.category:
             lines.append(f"  Category: {action.category}")
@@ -173,7 +174,7 @@ class DiffTreeModel(QAbstractItemModel):
             suffix = f"  [{STATES[node.diff_state][0]}]" if node.diff_state in STATES else ""
             return ("📁 " if node.is_dir else "") + node.name + suffix
         if role == Qt.ToolTipRole:
-            return _tooltip(node, self.editable)
+            return "<qt>" + escape(_tooltip(node, self.editable)).replace("\n", "<br>") + "</qt>"
         return None
 
     def flags(self, index):
@@ -403,7 +404,8 @@ class PreviewPanel(QWidget):
             color, text = ("#555577" if self._dark else "#9090a0"), "#ccccdd"
         self.badge.setStyleSheet(f"font-size:11px; font-weight:700; padding:1px 7px; "
                                  f"border-radius:9px; background:{color}; color:{text};")
-        self.badge.setText(f"{count:,} changes")
+        held = len(self.plan.review.get('held', {})) if self.plan else 0
+        self.badge.setText(f"{count:,} changes" + (f" · {held:,} held by review" if held else ''))
         self.badge.show()
 
     def _show_details(self, node):
@@ -455,6 +457,11 @@ class PreviewPanel(QWidget):
         self.details.addWidget(row)
 
     def set_plan(self, inventory, plan, shortcuts_movable=False, executables_movable=False):
+        if any(a.type != 'mkdir' and a.source_identity is None for a in plan.actions):
+            # Sample/imported previews need the same stale-file protection as AI plans.
+            report = Validator(Path(plan.root), allow_suffix_on_collision=False,
+                shortcuts_movable=shortcuts_movable, executables_movable=executables_movable).validate_plan(plan)
+            plan.actions, plan.warnings = report.valid_actions, report.warnings
         if inventory is not self.inventory:
             self._order = None
             self._displaced = set()
@@ -669,8 +676,11 @@ class PreviewPanel(QWidget):
     def _commit(self, actions, order=None, displaced=None):
         if self.plan is None or self._pending_edit:
             return False
-        candidate = OrganizationPlan(self.plan.root, actions, list(self.plan.warnings))
-        report = Validator(Path(self.plan.root), shortcuts_movable=self.shortcuts_movable,
+        candidate = OrganizationPlan(self.plan.root, actions, list(self.plan.warnings), review={
+            'user_edited': True, 'original_proposed': self.plan.review.get('proposed'),
+            'original_retained': self.plan.review.get('retained')})
+        report = Validator(Path(self.plan.root), allow_suffix_on_collision=False,
+                           shortcuts_movable=self.shortcuts_movable,
                            executables_movable=self.executables_movable).validate_plan(candidate)
         if report.rejected_actions:
             self.editRejected.emit(report.rejected_actions[0][1])
