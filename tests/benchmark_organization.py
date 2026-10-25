@@ -36,7 +36,7 @@ def main():
     try:
         inventory = Scanner(args.directory, exclude_patterns=config.get('exclude_patterns')).scan()
         plan = Planner(runtime, progress_cb=lambda message: print(message, file=sys.stderr)).plan(inventory)
-        report = Validator(Path(inventory.root), allow_suffix_on_collision=False).validate_plan(plan)
+        report = Validator(Path(inventory.root)).validate_plan(plan)
         print(json.dumps({
             'model': manager.model_info['label'], 'seed': args.seed,
             'backend': runtime._server.backend if runtime._server else 'not loaded',

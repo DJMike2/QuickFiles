@@ -253,12 +253,25 @@ class _GraphCanvas(QGraphicsView):
             self.zoom(1.15 if delta > 0 else 1 / 1.15)
         event.accept()
 
+    def _zoom_limits(self) -> tuple[float, float]:
+        """Closest zoom keeps every node on screen; farthest is 60% of the Fit view."""
+        view = self.viewport().rect()
+        nodes = self.scene().itemsBoundingRect().adjusted(-12, -12, 12, 12)
+        frame = self.sceneRect()
+        if nodes.isEmpty() or frame.isEmpty() or view.isEmpty():
+            return 0.1, 4.0
+        closest = min(view.width() / nodes.width(), view.height() / nodes.height())
+        fit = min(view.width() / frame.width(), view.height() / frame.height())
+        return min(fit, closest) * 0.6, closest
+
     def zoom(self, factor: float) -> None:
-        """Zoom around the cursor; clamp limits so the graph can't disappear."""
-        next_zoom = self.transform().m11() * factor
-        if 0.1 <= next_zoom <= 4.0:
+        """Zoom around the cursor, never past the point where nodes leave the view."""
+        current = self.transform().m11()
+        farthest, closest = self._zoom_limits()
+        target = max(farthest, min(closest, current * factor))
+        if abs(target - current) > 1e-4:
             self._auto_fit = False
-            self.scale(factor, factor)
+            self.scale(target / current, target / current)
 
     def fit_graph(self) -> None:
         """Reset zoom and pan to show every node with breathing room."""
@@ -271,6 +284,8 @@ class _GraphCanvas(QGraphicsView):
         super().resizeEvent(event)
         if self._auto_fit and not self.sceneRect().isEmpty():
             self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        elif not self._auto_fit:
+            self.zoom(1.0)
 
     def mousePressEvent(self, event) -> None:
         # A background drag is a deliberate pan. Preserve it on future resizes
@@ -601,8 +616,7 @@ class SearchGraphWidget(QWidget):
                          lambda p=path: self._open_result(p),
                          self._type_color(file_type),
                          # Keep the most recently hovered file visible in the
-                         # right panel, so its Open button remains clickable
-                         # after the cursor leaves the result circle.
+                         # right panel after the cursor leaves the circle.
                          lambda hovering, record=item: (
                              self.file_hovered.emit(record) if hovering else None
                          ))

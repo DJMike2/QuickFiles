@@ -1,13 +1,14 @@
 """Desktop scan → preview → apply → undo workflow."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QFileSystemWatcher, Qt, QTimer
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
-    QMessageBox, QProgressBar, QPushButton, QStyle, QSystemTrayIcon,
-    QTabWidget, QVBoxLayout, QWidget,
+    QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget, QStyle,
+    QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 from app.constants import (
@@ -15,11 +16,11 @@ from app.constants import (
     SHORTCUT_EXTENSIONS,
 )
 from app.ai.content import read_content
-from app.ai.schema import OrganizationPlan, PlanAction
+from app.ai.schema import PlanAction
 from app.core.arrival import ScanIndex, is_ignored
 from app.core.blocked_paths import validate_root_selection
 from app.core.executor import Executor
-from app.core.inventory import FileEntry, ScanInventory
+from app.core.inventory import FileEntry
 from app.core.planner import Planner
 from app.core.scanner import Scanner
 from app.core.undo import UndoEngine
@@ -44,84 +45,113 @@ class MainWindow(QMainWindow):
         self._job_kind = ""
         self._close_pending = False
         self._quit = False
+        self._opened_at = time.time()
         self._seen_names = set()
         self._pending_sizes = {}
         self._index = ScanIndex()
         self.setWindowTitle(APP_NAME)
         self.resize(1200, 750)
-        self.setMinimumSize(1000, 600)
+        self.setMinimumSize(1060, 680)
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(6, 4, 6, 0)
-        # Keep file organization and semantic search in separate tabs so the
-        # existing scan/preview/apply workflow stays unchanged.
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, 1)
-        organize_page = QWidget()
-        organize_layout = QVBoxLayout(organize_page)
-        organize_layout.setContentsMargins(4, 4, 4, 4)
-        toolbar = QHBoxLayout()
-        organize_layout.addLayout(toolbar)
-        toolbar.addWidget(QLabel("Folder:"))
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        toolbar_frame = QFrame()
+        toolbar_frame.setObjectName("toolbar")
+        toolbar_frame.setFixedHeight(44)
+        toolbar = QHBoxLayout(toolbar_frame)
+        toolbar.setContentsMargins(10, 5, 10, 5)
+        toolbar.setSpacing(6)
+        layout.addWidget(toolbar_frame)
+        # Organize and AI Search share the toolbar; folder controls only apply to Organize.
+        self.organize_tools = QWidget()
+        tools = QHBoxLayout(self.organize_tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(6)
+        folder_label = QLabel("Folder:")
+        folder_label.setStyleSheet("font-weight:600;")
+        tools.addWidget(folder_label)
         self.path = QLineEdit(self.config.get("allowed_root"))
+        self.path.setMinimumWidth(200)
         self.path.textEdited.connect(self._invalidate)
-        toolbar.addWidget(self.path, 1)
+        tools.addWidget(self.path, 1)
         self.browse = QPushButton("Browse…")
         self.browse.clicked.connect(self._browse)
-        toolbar.addWidget(self.browse)
         self.scan = QPushButton("Scan")
         self.scan.clicked.connect(self._scan)
-        toolbar.addWidget(self.scan)
-        self.sample = QPushButton("Sample")
-        self.sample.clicked.connect(self._load_sample)
-        toolbar.addWidget(self.sample)
         self.apply = QPushButton("Apply")
         self.apply.setObjectName("applyBtn")
         self.apply.clicked.connect(self._apply)
-        toolbar.addWidget(self.apply)
-        self.undo = QPushButton("Undo")
+        self.undo = QPushButton("⟲ Undo")
+        self.undo.setObjectName("undoBtn")
         self.undo.clicked.connect(self._undo)
-        toolbar.addWidget(self.undo)
-        self.setup = QPushButton("Setup AI")
+        for button in (self.browse, self.scan, self.apply, self.undo):
+            button.setFixedHeight(28)
+            tools.addWidget(button)
+        toolbar.addWidget(self.organize_tools, 1)
+        toolbar.addStretch()
+        separator = QFrame()
+        separator.setFrameShape(QFrame.VLine)
+        separator.setStyleSheet("color:#ccc;")
+        toolbar.addWidget(separator)
+        toolbar.addWidget(QLabel("View:"))
+        self.view_buttons = QButtonGroup(self)
+        for index, (text, radius) in enumerate((("Organize", "left"), ("AI Search", "right"))):
+            button = QPushButton(text)
+            button.setObjectName("viewBtn")
+            button.setCheckable(True)
+            button.setFixedHeight(28)
+            button.setStyleSheet(f"QPushButton#viewBtn {{ border-top-{radius}-radius:4px; "
+                                 f"border-bottom-{radius}-radius:4px; }}")
+            self.view_buttons.addButton(button, index)
+            toolbar.addWidget(button)
+        self.view_buttons.idClicked.connect(self._show_view)
+        self.setup = QPushButton("⬇ Setup AI")
+        self.setup.setFixedHeight(28)
+        self.setup.setToolTip("Download AI engine and model")
         self.setup.clicked.connect(self._setup)
         toolbar.addWidget(self.setup)
-        self.settings = QPushButton("Settings")
+        self.settings = QPushButton("⚙")
+        self.settings.setObjectName("iconBtn")
+        self.settings.setFixedSize(28, 28)
+        self.settings.setToolTip("Settings")
         self.settings.clicked.connect(self._settings)
         toolbar.addWidget(self.settings)
-        self.watch_new = QPushButton("Watch new files")
-        self.watch_new.setCheckable(True)
-        self.watch_new.setToolTip("Organize new files added to this folder, using the last scan")
-        self.watch_new.toggled.connect(self._toggle_watch)
-        toolbar.addWidget(self.watch_new)
         self.banner = QLabel()
         self.banner.setObjectName("banner")
         self.banner.setTextFormat(Qt.PlainText)
         self.banner.setWordWrap(True)
         self.banner.hide()
-        organize_layout.addWidget(self.banner)
+        layout.addWidget(self.banner)
+        self.pages = QStackedWidget()
+        layout.addWidget(self.pages, 1)
         self.preview = PreviewPanel()
         self.preview.planChanged.connect(self._plan_changed)
         self.preview.editRejected.connect(self._edit_rejected)
-        organize_layout.addWidget(self.preview, 1)
+        self.pages.addWidget(self.preview)
         # The normal application hides test-only JSON-loading controls.
         # Standalone SearchPanel() keeps the JSON loader visible for developers.
         self.search_panel = SearchPanel(self, show_json_loader=False)
         self.search_panel.folder.setText(self.config.get("search_root"))
         self.search_panel.searchRequested.connect(self._search)
         self.search_panel.cancelRequested.connect(self._cancel_search)
-        self.tabs.addTab(organize_page, "Organize Files")
-        self.tabs.addTab(self.search_panel, "AI Search")
+        self.pages.addWidget(self.search_panel)
+        toolbar.insertWidget(1, self.search_panel.scope_bar, 1)
         self.progress = QProgressBar()
         self.progress.setFixedSize(160, 14)
         self.progress.setTextVisible(False)
         self.progress.hide()
+        self.statusBar().setSizeGripEnabled(True)
         self.statusBar().addWidget(self.progress)
         self.status = QLabel("Ready")
+        self.status.setObjectName("statusLabel")
         self.status.setTextFormat(Qt.PlainText)
         self.statusBar().addWidget(self.status, 1)
         self.backend = QLabel()
+        self.backend.setObjectName("statusLabel")
         self.statusBar().addPermanentWidget(self.backend)
+        self._show_view(0)
         geometry = self.config.get("window_geometry")
         if geometry:
             self.restoreGeometry(QByteArray.fromBase64(geometry.encode()))
@@ -140,39 +170,53 @@ class MainWindow(QMainWindow):
         self._tray.activated.connect(self._tray_activated)
         self._theme()
         self._buttons()
-        if self.config.get("watch_new_files"):
-            self.watch_new.setChecked(True)
+        if self._watching():
+            self._arm_watch()
 
     def _theme(self):
         apply_theme(self.config.get("theme"))
         self.preview.set_dark(self.config.get("theme") == "dark")
 
+    def _show_view(self, index):
+        self.view_buttons.button(index).setChecked(True)
+        self.pages.setCurrentIndex(index)
+        self.organize_tools.setVisible(index == 0)
+        self.search_panel.scope_bar.setVisible(index == 1)
+
     def _buttons(self):
         busy = self.worker is not None or self.search_worker is not None
         self.apply.setEnabled(not busy and self.ctx.runtime.available and bool(self.plan and self.plan.actions))
-        self.undo.setEnabled(not busy and self.ctx.journal.get_latest_batch() is not None)
+        self.undo.setEnabled(not busy and self._undoable_batch() is not None)
         scanning = self.worker is not None and self._job_kind == "scan"
         self.scan.setText("Stop" if scanning else "Scan")
+        self.scan.setObjectName("stopBtn" if scanning else "")
+        self.scan.style().unpolish(self.scan)
+        self.scan.style().polish(self.scan)
         self.scan.setEnabled(not busy or scanning)
-        for widget in (self.path, self.browse, self.sample, self.setup, self.settings, self.preview):
+        for widget in (self.path, self.browse, self.setup, self.settings, self.preview):
             widget.setEnabled(not busy)
+        self.setup.setVisible(not self.ctx.runtime.available)
         self.search_panel.set_external_busy(self.worker is not None)
-        self.backend.setText(self.ctx.runtime.backend_label)
+        self.backend.setText(f"  {self.ctx.runtime.backend_label}  ")
 
-    def _toggle_watch(self, enabled):
-        self.config.set("watch_new_files", bool(enabled))
-        self._arm_watch()
-        if enabled and not self._index.folders:
-            self.status.setText("New files will be organized after the next scan.")
-        elif enabled:
-            self.status.setText("Watching this folder for new files.")
+    def _undoable_batch(self):
+        """Only moves applied since this window opened can be undone."""
+        batch = self.ctx.journal.get_latest_batch()
+        if batch is None or batch.applied_at < self._opened_at:
+            return None
+        if not any(op.succeeded and not op.undone for op in batch.ops):
+            return None
+        return batch
+
+    def _watching(self):
+        return bool(self.config.get("watch_new_files"))
 
     def _arm_watch(self):
         if self._watcher.directories():
             self._watcher.removePaths(self._watcher.directories())
         self._arrival_timer.stop()
         self._pending_sizes.clear()
-        if not self.watch_new.isChecked():
+        if not self._watching():
             self._tray.hide()
             return
         root = self._watch_root()
@@ -196,16 +240,16 @@ class MainWindow(QMainWindow):
         if self.inventory is not None:
             self._index.learn(self.inventory)
         root = self._watch_root()
-        if root is not None and self.watch_new.isChecked():
+        if root is not None and self._watching():
             self._note_present(root)
 
     def _schedule_arrivals(self, _path=""):
-        if self.watch_new.isChecked():
+        if self._watching():
             self._arrival_timer.start()
 
     def _check_arrivals(self):
-        if not self.watch_new.isChecked() or self.worker or self.search_worker:
-            if self.watch_new.isChecked():
+        if not self._watching() or self.worker or self.search_worker:
+            if self._watching():
                 self._arrival_timer.start()
             return
         root = self._watch_root()
@@ -323,45 +367,8 @@ class MainWindow(QMainWindow):
         self._index = ScanIndex()
         self.preview.clear()
         self._buttons()
-        if self.watch_new.isChecked():
+        if self._watching():
             self._arm_watch()
-
-    def _load_sample(self):
-        root = Path.home() / "Desktop" / "DragDropTest"
-        files = {
-            "notes.txt": "Lunch with Sam.\n",
-            "receipt.txt": "Coffee 4.50\n",
-            "Photos/holiday.txt": "Beach photo placeholder.\n",
-            "Notes/meeting.txt": "Monday standup notes.\n",
-        }
-        for relative, text in files.items():
-            path = root.joinpath(*relative.split("/"))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if not path.exists():
-                path.write_text(text, encoding="utf-8")
-        (root / "Trips").mkdir(exist_ok=True)
-        entries = []
-        for relative in files:
-            path = root.joinpath(*relative.split("/"))
-            parent = path.parent.name if path.parent != root else ""
-            entries.append(FileEntry(
-                relative, path.name, path.suffix.lower(), str(path),
-                parent_folder=parent, depth=0 if parent == "" else 1,
-            ))
-        inventory = ScanInventory(str(root), entries=entries, directories=["Photos", "Notes", "Trips"])
-        plan = OrganizationPlan(str(root), [
-            PlanAction("1", "move", "receipt.txt", "Receipts/receipt.txt",
-                       category="Documents", confidence=1, reason="Sample move"),
-        ])
-        self.path.setText(str(root))
-        self.inventory = inventory
-        self.plan = plan
-        self.preview.set_plan(
-            inventory, plan, self.config.get("shortcuts_movable"), self.config.get("executables_movable"),
-        )
-        self.status.setText("Sample loaded. Drag a file onto a folder in After.")
-        self._learn_scan()
-        self._buttons()
 
     def _browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Select folder", self.path.text())
@@ -404,13 +411,11 @@ class MainWindow(QMainWindow):
         self.path.setText(str(root))
         self.config.set("allowed_root", str(root))
         options = {
-            "max_files": self.config.get("max_files_per_scan"),
             "content_read_bytes": self.config.get("content_read_bytes"),
             "exclude_patterns": list(self.config.get("exclude_patterns")),
         }
         shortcuts = self.config.get("shortcuts_movable")
         executables = self.config.get("executables_movable")
-        suffix = self.config.get("duplicate_suffix_allowed")
         self._invalidate()
         self._show_banner("")
 
@@ -425,8 +430,7 @@ class MainWindow(QMainWindow):
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
-            report = Validator(root, allow_suffix_on_collision=suffix,
-                               shortcuts_movable=shortcuts,
+            report = Validator(root, shortcuts_movable=shortcuts,
                                executables_movable=executables).validate_plan(plan)
             plan.actions = report.valid_actions
             plan.warnings = report.warnings
@@ -453,7 +457,7 @@ class MainWindow(QMainWindow):
         self._start("apply", operation)
 
     def _undo(self):
-        batch = self.ctx.journal.get_latest_batch()
+        batch = self._undoable_batch()
         if batch is None:
             return
         if QMessageBox.question(self, "Undo batch", f"Undo the most recent batch in {batch.root}?\n"
@@ -607,6 +611,9 @@ class MainWindow(QMainWindow):
             self._invalidate()
             self.ctx.runtime.shutdown()
             self.ctx.search.exclude_patterns = self.config.get("exclude_patterns")
+            self._arm_watch()
+            if self._watching():
+                self.status.setText("Watching for new files. They are compared to the next scan of this folder.")
         self._buttons()
 
     def show_first_run_if_needed(self):
@@ -617,7 +624,7 @@ class MainWindow(QMainWindow):
                 self._setup()
 
     def closeEvent(self, event):
-        if self.watch_new.isChecked() and not self._quit and self._tray.isVisible():
+        if self._watching() and not self._quit and self._tray.isVisible():
             event.ignore()
             self.hide()
             if not self.worker and not self.search_worker:

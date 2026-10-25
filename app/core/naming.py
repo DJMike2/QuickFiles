@@ -1,6 +1,5 @@
 """One set of portable filename rules for validation and inline editing."""
 import re
-from pathlib import PurePosixPath
 
 _RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
@@ -22,12 +21,3 @@ def relative_parts(value: str) -> tuple[str, ...]:
     if not all(is_valid_filename(part) for part in parts):
         raise ValueError(f"Invalid relative path: {value!r}")
     return tuple(parts)
-
-
-def make_unique_dest(destination: str, occupied) -> str:
-    path = PurePosixPath(destination)
-    for number in range(1, 100_000):
-        candidate = str(path.with_name(f"{path.stem} ({number}){path.suffix}"))
-        if not occupied(candidate):
-            return candidate
-    raise ValueError(f"Too many destination collisions: {destination}")
