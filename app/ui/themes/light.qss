@@ -50,6 +50,11 @@ QFrame#toolbar {
     border-bottom: 2px solid #e0e3e8;
 }
 QFrame#toolbar QPushButton { padding-top: 1px; padding-bottom: 1px; }
+QWidget#organizeTools, QWidget#scopeBar { background-color: transparent; }
+QFrame#toolbar QLabel, QLabel#toolbarLabel {
+    background-color: transparent;
+    font-weight: 600;
+}
 
 /* === LABELS === */
 QLabel {
