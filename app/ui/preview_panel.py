@@ -182,9 +182,7 @@ class DiffTreeModel(QAbstractItemModel):
         flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         node = index.internalPointer()
         if self.editable:
-            flags |= Qt.ItemIsDropEnabled | Qt.ItemIsDragEnabled
-            if not node.is_dir or node.diff_state == "created_dir":
-                flags |= Qt.ItemIsEditable
+            flags |= Qt.ItemIsDropEnabled | Qt.ItemIsDragEnabled | Qt.ItemIsEditable
         return flags
 
     def supportedDropActions(self):
@@ -245,6 +243,30 @@ class DiffTreeModel(QAbstractItemModel):
         return self.rename(node, name)
 
 
+class _FolderTree(QTreeView):
+    """Any click left of a folder's name opens or closes it, not just the small arrow."""
+
+    def _margin_folder(self, event):
+        index = self.indexAt(event.position().toPoint())
+        if (event.button() == Qt.LeftButton and index.isValid() and self.model().hasChildren(index)
+                and event.position().x() < self.visualRect(index).left()):
+            return index
+        return None
+
+    def mousePressEvent(self, event):
+        index = self._margin_folder(event)
+        if index is None:
+            super().mousePressEvent(event)
+        else:
+            self.setExpanded(index, not self.isExpanded(index))
+
+    def mouseDoubleClickEvent(self, event):
+        # Qt already delivered a press for this click; swallow the double-click so it neither
+        # toggles back nor starts renaming.
+        if self._margin_folder(event) is None:
+            super().mouseDoubleClickEvent(event)
+
+
 class PreviewPanel(QWidget):
     planChanged = Signal(object)
     editRejected = Signal(str)
@@ -294,19 +316,21 @@ class PreviewPanel(QWidget):
                 self.legend.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
                 header.addWidget(self.legend)
                 # The hint absorbs any shortage of width so the legend is never covered.
-                hint = QLabel("✏ double-click to rename · drag to move")
+                hint = QLabel("✏ Double-click: rename · Drag: move")
                 hint.setStyleSheet("font-size:10px; color:#888; font-style:italic; margin-left:6px;")
                 hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
                 header.addWidget(hint, 1)
             else:
                 header.addStretch()
             column.addWidget(header_row)
-            tree = QTreeView()
+            tree = _FolderTree()
             tree.setHeaderHidden(True)
             tree.setAnimated(True)
             tree.setUniformRowHeights(True)
             tree.setAlternatingRowColors(True)
             tree.setMouseTracking(True)
+            # Folders open from the arrow only; double-click is reserved for renaming.
+            tree.setExpandsOnDoubleClick(False)
             delegate = DiffItemDelegate(tree)
             tree.setItemDelegate(delegate)
             self.delegates.append(delegate)
@@ -476,6 +500,9 @@ class PreviewPanel(QWidget):
             return False
         old = node.rel_path
         new = str(PurePosixPath(old).with_name(name))
+        if node.is_dir and node.diff_state != "created_dir":
+            # Renaming an existing folder moves its contents, like dragging it to a new name.
+            return self._move(node, new)
         actions = copy.deepcopy(self.plan.actions)
         changed = False
         for action in actions:
