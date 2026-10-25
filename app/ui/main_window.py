@@ -3,14 +3,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, QFileSystemWatcher, Qt, QTimer
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
+    QMessageBox, QProgressBar, QPushButton, QStyle, QSystemTrayIcon,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
-from app.constants import APP_NAME
+from app.constants import (
+    APP_NAME, CONSERVATIVE_EXTENSIONS, EXECUTABLE_EXTENSIONS, EXT_CATEGORY_MAP,
+    SHORTCUT_EXTENSIONS,
+)
+from app.ai.content import read_content
 from app.ai.schema import OrganizationPlan, PlanAction
+from app.core.arrival import ScanIndex, is_ignored
 from app.core.blocked_paths import validate_root_selection
 from app.core.executor import Executor
 from app.core.inventory import FileEntry, ScanInventory
@@ -37,6 +43,10 @@ class MainWindow(QMainWindow):
         self.inventory = None
         self._job_kind = ""
         self._close_pending = False
+        self._quit = False
+        self._seen_names = set()
+        self._pending_sizes = {}
+        self._index = ScanIndex()
         self.setWindowTitle(APP_NAME)
         self.resize(1200, 750)
         self.setMinimumSize(1000, 600)
@@ -79,6 +89,11 @@ class MainWindow(QMainWindow):
         self.settings = QPushButton("Settings")
         self.settings.clicked.connect(self._settings)
         toolbar.addWidget(self.settings)
+        self.watch_new = QPushButton("Watch new files")
+        self.watch_new.setCheckable(True)
+        self.watch_new.setToolTip("Organize new files added to this folder, using the last scan")
+        self.watch_new.toggled.connect(self._toggle_watch)
+        toolbar.addWidget(self.watch_new)
         self.banner = QLabel()
         self.banner.setObjectName("banner")
         self.banner.setTextFormat(Qt.PlainText)
@@ -110,8 +125,23 @@ class MainWindow(QMainWindow):
         geometry = self.config.get("window_geometry")
         if geometry:
             self.restoreGeometry(QByteArray.fromBase64(geometry.encode()))
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._schedule_arrivals)
+        self._arrival_timer = QTimer(self)
+        self._arrival_timer.setSingleShot(True)
+        self._arrival_timer.setInterval(2000)
+        self._arrival_timer.timeout.connect(self._check_arrivals)
+        self._tray = QSystemTrayIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon), self)
+        self._tray.setToolTip(APP_NAME)
+        tray_menu = QMenu(self)
+        tray_menu.addAction("Show", self._show_from_tray)
+        tray_menu.addAction("Quit", self._quit_from_tray)
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._tray_activated)
         self._theme()
         self._buttons()
+        if self.config.get("watch_new_files"):
+            self.watch_new.setChecked(True)
 
     def _theme(self):
         apply_theme(self.config.get("theme"))
@@ -129,11 +159,172 @@ class MainWindow(QMainWindow):
         self.search_panel.set_external_busy(self.worker is not None)
         self.backend.setText(self.ctx.runtime.backend_label)
 
+    def _toggle_watch(self, enabled):
+        self.config.set("watch_new_files", bool(enabled))
+        self._arm_watch()
+        if enabled and not self._index.folders:
+            self.status.setText("New files will be organized after the next scan.")
+        elif enabled:
+            self.status.setText("Watching this folder for new files.")
+
+    def _arm_watch(self):
+        if self._watcher.directories():
+            self._watcher.removePaths(self._watcher.directories())
+        self._arrival_timer.stop()
+        self._pending_sizes.clear()
+        if not self.watch_new.isChecked():
+            self._tray.hide()
+            return
+        root = self._watch_root()
+        if root is not None:
+            self._watcher.addPath(str(root))
+            self._note_present(root)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray.show()
+
+    def _watch_root(self):
+        root = Path(self.path.text().strip()).expanduser()
+        valid, _reason = validate_root_selection(root)
+        if not valid or not root.is_dir():
+            return None
+        return root.resolve()
+
+    def _note_present(self, root):
+        self._seen_names = {child.name for child in root.iterdir() if child.is_file()}
+
+    def _learn_scan(self):
+        if self.inventory is not None:
+            self._index.learn(self.inventory)
+        root = self._watch_root()
+        if root is not None and self.watch_new.isChecked():
+            self._note_present(root)
+
+    def _schedule_arrivals(self, _path=""):
+        if self.watch_new.isChecked():
+            self._arrival_timer.start()
+
+    def _check_arrivals(self):
+        if not self.watch_new.isChecked() or self.worker or self.search_worker:
+            if self.watch_new.isChecked():
+                self._arrival_timer.start()
+            return
+        root = self._watch_root()
+        if root is None or not self._index.folders:
+            return
+        waiting = False
+        ready = []
+        patterns = list(self.config.get("exclude_patterns") or [])
+        try:
+            children = [child for child in root.iterdir() if child.is_file()]
+        except OSError:
+            return
+        for child in children:
+            if child.name in self._seen_names or is_ignored(child.name, patterns):
+                continue
+            try:
+                size = child.stat().st_size
+            except OSError:
+                continue
+            if self._pending_sizes.get(child.name) != size:
+                self._pending_sizes[child.name] = size
+                waiting = True
+                continue
+            self._pending_sizes.pop(child.name, None)
+            self._seen_names.add(child.name)
+            if self._can_move(child):
+                ready.append(child)
+        if ready:
+            self._ask_model(root, ready)
+        if waiting:
+            self._arrival_timer.start()
+
+    def _can_move(self, path):
+        extension = path.suffix.lower()
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if size <= 0:
+            return False
+        if extension in SHORTCUT_EXTENSIONS:
+            return bool(self.config.get("shortcuts_movable"))
+        if extension in EXECUTABLE_EXTENSIONS:
+            return bool(self.config.get("executables_movable"))
+        return extension not in CONSERVATIVE_EXTENSIONS
+
+    def _ask_model(self, root, paths):
+        if not self._index.folders:
+            self.status.setText("New files will be organized after the next scan.")
+            return
+        if not self.ctx.runtime.available:
+            self.status.setText("Local AI is not set up, so the new file was left in place.")
+            return
+        folders = dict(self._index.folders)
+        limit = self.config.get("content_read_bytes")
+        shortcuts = self.config.get("shortcuts_movable")
+        executables = self.config.get("executables_movable")
+
+        def operation(status, progress, cancelled):
+            files = []
+            try:
+                for index, path in enumerate(paths, 1):
+                    if cancelled():
+                        raise InterruptedError("Planning stopped")
+                    extension = path.suffix.lower()
+                    stat = path.stat()
+                    entry = FileEntry(
+                        path.name, path.name, extension, str(path), size_bytes=stat.st_size,
+                        modified_ts=stat.st_mtime,
+                        file_type_bucket=EXT_CATEGORY_MAP.get(extension, "Misc"),
+                        is_conservative=extension in CONSERVATIVE_EXTENSIONS, depth=0,
+                    )
+                    files.append({
+                        "id": index, "name": path.name, "rel_path": path.name,
+                        "hint": read_content(entry, limit),
+                    })
+                status("Asking local AI about the new file…")
+                assigned = self.ctx.runtime.assign_files(
+                    files, folders, status_cb=status, cancelled=cancelled,
+                )
+                moved = []
+                executor = Executor(root, self.ctx.journal, progress, cancelled, shortcuts, executables)
+                for row in files:
+                    folder = assigned.get(row["rel_path"])
+                    if not folder or cancelled():
+                        continue
+                    action = PlanAction(
+                        str(row["id"]), "move", row["name"], f"{folder}/{row['name']}",
+                        category=folder, confidence=1, reason="Local AI matched the file to this folder",
+                    )
+                    if executor.apply([action]).succeeded:
+                        moved.append((row["name"], folder))
+                return moved
+            finally:
+                self.ctx.runtime.shutdown()
+
+        self._start("watch", operation)
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self):
+        self._quit = True
+        self.close()
+
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._show_from_tray()
+
     def _invalidate(self, *_):
         self.plan = None
         self.inventory = None
+        self._index = ScanIndex()
         self.preview.clear()
         self._buttons()
+        if self.watch_new.isChecked():
+            self._arm_watch()
 
     def _load_sample(self):
         root = Path.home() / "Desktop" / "DragDropTest"
@@ -169,6 +360,7 @@ class MainWindow(QMainWindow):
             inventory, plan, self.config.get("shortcuts_movable"), self.config.get("executables_movable"),
         )
         self.status.setText("Sample loaded. Drag a file onto a folder in After.")
+        self._learn_scan()
         self._buttons()
 
     def _browse(self):
@@ -291,7 +483,10 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(self._job_finished)
         self.progress.setRange(0, 0)
         self.progress.show()
-        self.status.setText({"scan": "Scanning…", "apply": "Applying…", "undo": "Undoing…"}[kind])
+        self.status.setText({
+            "scan": "Scanning…", "apply": "Applying…", "undo": "Undoing…",
+            "watch": "Asking local AI about the new file…",
+        }[kind])
         self._buttons()
         self.worker.start()
 
@@ -307,12 +502,25 @@ class MainWindow(QMainWindow):
         kind = self._job_kind
         self.worker = None
         self.progress.hide()
-        if worker.error:
+        if worker.error and kind == "watch":
+            self.status.setText(f"New file left in place: {worker.error}")
+        elif worker.error:
             self._invalidate()
             self.status.setText(f"Operation failed: {worker.error}")
             self._show_banner(worker.error)
+        elif kind == "watch" and (worker.stopped or worker.cancel_event.is_set()):
+            self.status.setText("Stopped. The new file was left in place.")
         elif worker.stopped or (kind == "scan" and worker.cancel_event.is_set()):
             self.status.setText("Stopped. No new plan was applied.")
+        elif kind == "watch":
+            for name, folder in worker.result or []:
+                self._index.add(folder, name)
+                self._tray.showMessage(APP_NAME, f"{name} move to {folder}",
+                                       QSystemTrayIcon.MessageIcon.Information, 5000)
+            moved = worker.result or []
+            self.status.setText(
+                f"{moved[-1][0]} move to {moved[-1][1]}" if moved else "New file left in place."
+            )
         elif kind == "scan":
             self.inventory, self.plan = worker.result
             self.preview.set_plan(
@@ -326,6 +534,7 @@ class MainWindow(QMainWindow):
             )
             warnings = [warning.message for warning in self.plan.warnings]
             self._show_banner("\n".join(warnings[:5]))
+            self._learn_scan()
         else:
             result = worker.result
             self._invalidate()
@@ -408,6 +617,13 @@ class MainWindow(QMainWindow):
                 self._setup()
 
     def closeEvent(self, event):
+        if self.watch_new.isChecked() and not self._quit and self._tray.isVisible():
+            event.ignore()
+            self.hide()
+            if not self.worker and not self.search_worker:
+                self.ctx.runtime.shutdown()
+                self._buttons()
+            return
         if self.worker or self.search_worker:
             self._close_pending = True
             if self.worker:
@@ -418,5 +634,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.config.set("window_geometry", bytes(self.saveGeometry().toBase64()).decode())
+        self._tray.hide()
         self.ctx.shutdown()
         event.accept()
