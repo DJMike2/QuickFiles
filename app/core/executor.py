@@ -68,12 +68,14 @@ def safe_move(source: Path, destination: Path):
 
 
 class Executor:
-    def __init__(self, root, journal, progress_cb=None, cancelled=None, shortcuts_movable=False):
+    def __init__(self, root, journal, progress_cb=None, cancelled=None, shortcuts_movable=False,
+                 executables_movable=False):
         self.root = resolve_safe(root)
         self.journal = journal
         self.progress_cb = progress_cb or (lambda current, total, name: None)
         self.cancelled = cancelled or (lambda: False)
         self.shortcuts_movable = shortcuts_movable
+        self.executables_movable = executables_movable
         self._order = 0
 
     def _record(self, batch_id, kind, source, destination):
@@ -116,6 +118,7 @@ class Executor:
                 report = Validator(
                     self.root, allow_suffix_on_collision=False,
                     shortcuts_movable=self.shortcuts_movable,
+                    executables_movable=self.executables_movable,
                 ).validate_plan(OrganizationPlan(str(self.root), [action]))
                 if report.rejected_actions:
                     raise ValueError(report.rejected_actions[0][1])

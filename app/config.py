@@ -18,6 +18,7 @@ DEFAULTS = {
     "max_files_per_scan": DEFAULT_MAX_FILES,
     "content_read_bytes": DEFAULT_CONTENT_READ_BYTES,
     "shortcuts_movable": False,
+    "executables_movable": False,
     "duplicate_suffix_allowed": True,
     "window_geometry": None,
 }
@@ -38,14 +39,19 @@ class AppConfig:
         self.app_data_dir = app_data_dir or app_data_path()
         self._path = self.app_data_dir / "config.json"
         self._data = copy.deepcopy(DEFAULTS)
+        stored = None
         try:
-            stored = json.loads(self._path.read_text(encoding="utf-8"))
-            if isinstance(stored, dict):
+            loaded = json.loads(self._path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                stored = loaded
                 self._data.update({key: stored[key] for key in DEFAULTS if key in stored})
         except FileNotFoundError:
             pass
         except (OSError, ValueError) as exc:
             logging.getLogger(__name__).warning("Could not read preferences: %s", exc)
+        # Older settings used one switch for both shortcuts and executables.
+        if isinstance(stored, dict) and "executables_movable" not in stored:
+            self._data["executables_movable"] = bool(stored.get("shortcuts_movable", False))
 
     def get(self, key, default=None):
         return self._data.get(key, default)
