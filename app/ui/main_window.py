@@ -10,8 +10,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.constants import APP_NAME
+from app.ai.schema import OrganizationPlan, PlanAction
 from app.core.blocked_paths import validate_root_selection
 from app.core.executor import Executor
+from app.core.inventory import FileEntry, ScanInventory
 from app.core.planner import Planner
 from app.core.scanner import Scanner
 from app.core.undo import UndoEngine
@@ -52,6 +54,9 @@ class MainWindow(QMainWindow):
         self.scan = QPushButton("Scan")
         self.scan.clicked.connect(self._scan)
         toolbar.addWidget(self.scan)
+        self.sample = QPushButton("Sample")
+        self.sample.clicked.connect(self._load_sample)
+        toolbar.addWidget(self.sample)
         self.apply = QPushButton("Apply")
         self.apply.setObjectName("applyBtn")
         self.apply.clicked.connect(self._apply)
@@ -106,7 +111,7 @@ class MainWindow(QMainWindow):
         self.undo.setEnabled(not busy and self.ctx.journal.get_latest_batch() is not None)
         self.scan.setText("Stop" if busy and self._job_kind == "scan" else "Scan")
         self.scan.setEnabled(not busy or self._job_kind == "scan")
-        for widget in (self.path, self.browse, self.mode, self.setup, self.settings, self.preview):
+        for widget in (self.path, self.browse, self.sample, self.mode, self.setup, self.settings, self.preview):
             widget.setEnabled(not busy)
         self.backend.setText(self.ctx.runtime.backend_label)
 
@@ -114,6 +119,42 @@ class MainWindow(QMainWindow):
         self.plan = None
         self.inventory = None
         self.preview.clear()
+        self._buttons()
+
+    def _load_sample(self):
+        root = Path.home() / "Desktop" / "DragDropTest"
+        files = {
+            "notes.txt": "Lunch with Sam.\n",
+            "receipt.txt": "Coffee 4.50\n",
+            "Photos/holiday.txt": "Beach photo placeholder.\n",
+            "Notes/meeting.txt": "Monday standup notes.\n",
+        }
+        for relative, text in files.items():
+            path = root.joinpath(*relative.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(text, encoding="utf-8")
+        (root / "Trips").mkdir(exist_ok=True)
+        entries = []
+        for relative in files:
+            path = root.joinpath(*relative.split("/"))
+            parent = path.parent.name if path.parent != root else ""
+            entries.append(FileEntry(
+                relative, path.name, path.suffix.lower(), str(path),
+                parent_folder=parent, depth=0 if parent == "" else 1,
+            ))
+        inventory = ScanInventory(str(root), entries=entries, directories=["Photos", "Notes", "Trips"])
+        plan = OrganizationPlan(str(root), [
+            PlanAction("1", "move", "receipt.txt", "Receipts/receipt.txt",
+                       category="Documents", confidence=1, reason="Sample move"),
+        ])
+        self.path.setText(str(root))
+        self.inventory = inventory
+        self.plan = plan
+        self.preview.set_plan(
+            inventory, plan, self.config.get("shortcuts_movable"), self.config.get("executables_movable"),
+        )
+        self.status.setText("Sample loaded. Drag a file onto a folder in After.")
         self._buttons()
 
     def _browse(self):
@@ -165,6 +206,7 @@ class MainWindow(QMainWindow):
         }
         mode = self.ctx.mode
         shortcuts = self.config.get("shortcuts_movable")
+        executables = self.config.get("executables_movable")
         suffix = self.config.get("duplicate_suffix_allowed")
         threshold = self.ctx.model_manager.profile(mode)["confidence_threshold"]
         self._invalidate()
@@ -181,7 +223,8 @@ class MainWindow(QMainWindow):
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
             report = Validator(root, allow_suffix_on_collision=suffix,
-                               shortcuts_movable=shortcuts).validate_plan(plan)
+                               shortcuts_movable=shortcuts,
+                               executables_movable=executables).validate_plan(plan)
             plan.actions = report.valid_actions
             plan.warnings = report.warnings
             plan.excluded_count = inventory.total_files - len({a.src_rel for a in report.valid_actions})
@@ -197,9 +240,12 @@ class MainWindow(QMainWindow):
             return
         plan = self.plan
         shortcuts = self.config.get("shortcuts_movable")
+        executables = self.config.get("executables_movable")
 
         def operation(status, progress, cancelled):
-            return Executor(Path(plan.root), self.ctx.journal, progress, cancelled, shortcuts).apply(plan.actions)
+            return Executor(
+                Path(plan.root), self.ctx.journal, progress, cancelled, shortcuts, executables,
+            ).apply(plan.actions)
 
         self._start("apply", operation)
 
@@ -256,7 +302,10 @@ class MainWindow(QMainWindow):
             self.status.setText("Stopped. No new plan was applied.")
         elif kind == "scan":
             self.inventory, self.plan = worker.result
-            self.preview.set_plan(self.inventory, self.plan, self.config.get("shortcuts_movable"))
+            self.preview.set_plan(
+                self.inventory, self.plan,
+                self.config.get("shortcuts_movable"), self.config.get("executables_movable"),
+            )
             self.status.setText(
                 f"{self.inventory.total_files:,} files · {len(self.plan.actions):,} changes · "
                 f"{self.plan.excluded_count:,} unchanged · {self.inventory.skipped_count:,} skipped · "
