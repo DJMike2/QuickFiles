@@ -15,6 +15,7 @@ dist/
 *.part
 .DS_Store
 Thumbs.db
+app/core/native/bin/
 
 # Keep local verification tools and reports out of the public source tree.
 /tests/

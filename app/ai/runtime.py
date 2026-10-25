@@ -3,7 +3,7 @@ import json
 import re
 
 from app.ai.llm_server import ContextTooLargeError, LLMServer, LLMServerError
-from app.ai.prompts import ASSIGN_PROMPT, FOLDER_PLAN_PROMPT, LEFTOVER_FOLDERS_PROMPT
+from app.ai.prompts import ASSIGN_PROMPT, FOLDER_PLAN_PROMPT, LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT
 
 
 class AIRuntime:
@@ -116,6 +116,35 @@ class AIRuntime:
                 status_cb(f"Assigning files… {min(offset + batch_size, len(files)):,}/{len(files):,}")
             found.update(assign(files[offset:offset + batch_size]))
         return found
+
+    def rewrite_query(self, query, status_cb=None, cancelled=None):
+        schema = {'type': 'object', 'additionalProperties': False, 'properties': {
+            'query': {'type': 'string', 'minLength': 1, 'maxLength': 240},
+            'extensions': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'maxLength': 12}},
+            'exclude_extensions': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'maxLength': 12}},
+            'exclude_terms': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'maxLength': 48}},
+        }, 'required': ['query', 'extensions', 'exclude_extensions', 'exclude_terms']}
+        try:
+            raw = self._generate(SEARCH_QUERY_PROMPT, json.dumps({'request': query}, ensure_ascii=False),
+                                 status_cb, cancelled, max_tokens=192, schema=schema)
+            value = json.loads(raw)
+            if not isinstance(value, dict) or not isinstance(value.get('query'), str) or not value['query'].strip():
+                raise ValueError('Empty rewritten query')
+            for key in ('extensions', 'exclude_extensions', 'exclude_terms'):
+                if not isinstance(value.get(key), list) or any(not isinstance(x, str) for x in value[key]):
+                    raise ValueError('Invalid query filters')
+            for key in ('extensions', 'exclude_extensions'):
+                value[key] = [('.' + x.lstrip('.')).lower() for x in value[key]
+                              if re.fullmatch(r'\.?[a-zA-Z0-9]{1,10}', x)]
+            value['query'] = value['query'].strip()[:240]
+            value['exclude_terms'] = [x.casefold().strip() for x in value['exclude_terms'] if x.strip()]
+            return value
+        except (ValueError, KeyError, TypeError) as exc:
+            self.shutdown()
+            raise LLMServerError('The local model returned an invalid search request') from exc
+        except (LLMServerError, InterruptedError):
+            self.shutdown()
+            raise
 
     def shutdown(self):
         if self._server:

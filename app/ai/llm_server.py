@@ -22,10 +22,11 @@ class ContextTooLargeError(LLMServerError):
 
 
 class LLMServer:
-    def __init__(self, binary_manager, model_path, settings):
+    def __init__(self, binary_manager, model_path, settings, *, embedding=False):
         self.binary_manager = binary_manager
         self.model_path = model_path
         self.settings = settings
+        self.embedding = embedding
         self._process = None
         self._output = None
         self.port = 0
@@ -44,11 +45,9 @@ class LLMServer:
         if not manager.is_available or not self.model_path.is_file():
             raise LLMServerError("AI engine or model is missing")
         attempts = []
-        if manager.gpu_binary_path:
+        if manager.gpu_binary_path and not self.embedding:
             attempts.append((manager.gpu_binary_path, self.settings["n_gpu_layers"], manager.hardware.backend))
-        metal = manager.hardware.backend == "metal"
-        attempts.append((manager.cpu_binary_path, self.settings["n_gpu_layers"] if metal else 0,
-                         "metal" if metal else "cpu"))
+        attempts.append((manager.cpu_binary_path, 0, "cpu"))
         errors = []
         for binary, layers, backend in attempts:
             if cancelled():
@@ -63,10 +62,14 @@ class LLMServer:
                 if sys.platform.startswith("linux"):
                     environment["LD_LIBRARY_PATH"] = str(binary.parent) + os.pathsep + environment.get("LD_LIBRARY_PATH", "")
                 self._output = tempfile.TemporaryFile()
-                self._process = subprocess.Popen(
-                    [str(binary), "--model", str(self.model_path), "--host", "127.0.0.1",
+                command = [str(binary), "--model", str(self.model_path), "--host", "127.0.0.1",
                      "--port", str(self.port), "--ctx-size", str(self.settings["context_tokens"]),
-                     "--n-gpu-layers", str(layers), "--threads", str(self.settings["threads"])],
+                     "--n-gpu-layers", str(layers), "--threads", str(self.settings["threads"])]
+                if self.embedding:
+                    command += ["--embedding", "--pooling", "mean", "--parallel", "1",
+                                "--batch-size", "2048", "--ubatch-size", "2048"]
+                self._process = subprocess.Popen(
+                    command,
                     stdout=self._output, stderr=subprocess.STDOUT, cwd=binary.parent, env=environment,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                 )
@@ -114,13 +117,8 @@ class LLMServer:
             payload["json_schema"] = schema
         if grammar is not None:
             payload["grammar"] = grammar
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/v1/chat/completions",
-            data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"},
-        )
         try:
-            with urllib.request.urlopen(request, timeout=600) as response:
-                choice = json.load(response)["choices"][0]
+            choice = self._request("chat/completions", payload)["choices"][0]
             if choice.get("finish_reason") != "stop":
                 raise LLMServerError("The model did not finish its response. No partial plan will be used.")
             if choice["message"].get("reasoning_content"):
@@ -129,9 +127,32 @@ class LLMServer:
             if not isinstance(content, str) or not content.strip():
                 raise LLMServerError("The model returned an empty response")
             return content
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise LLMServerError(f"Invalid local AI response: {exc}") from exc
+
+    def embed(self, texts):
+        if not self.is_running:
+            raise LLMServerError("The local embedding engine is not running")
+        try:
+            rows = self._request("embeddings", {"input": texts, "model": "local"})["data"]
+            rows = sorted(rows, key=lambda row: row["index"])
+            if [row["index"] for row in rows] != list(range(len(texts))):
+                raise ValueError("Missing embedding vectors")
+            return [row["embedding"] for row in rows]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise LLMServerError(f"Invalid embedding response: {exc}") from exc
+
+    def _request(self, endpoint, payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/v1/{endpoint}", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                return json.load(response)
         except urllib.error.HTTPError as exc:
             detail = exc.read(4096).decode(errors="replace")
-            if exc.code == 400 and any(word in detail.lower() for word in ("context", "exceed")):
+            if exc.code == 400 and any(word in detail.lower() for word in ("context", "exceed", "too large")):
                 raise ContextTooLargeError(detail) from exc
             raise LLMServerError(f"Engine HTTP {exc.code}: {detail}") from exc
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:

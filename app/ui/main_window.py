@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self.ctx = context
         self.config = context.config
         self.worker = None
+        self.search_worker = None
         self.plan = None
         self.inventory = None
         self._job_kind = ""
@@ -91,12 +92,9 @@ class MainWindow(QMainWindow):
         # The normal application hides test-only JSON-loading controls.
         # Standalone SearchPanel() keeps the JSON loader visible for developers.
         self.search_panel = SearchPanel(self, show_json_loader=False)
-        # Search temporarily mirrors the organizer toolbar buttons. The
-        # copies call these *same* buttons, not duplicate scan/AI logic.
-        self.search_panel.bind_organizer_controls({
-            "Browse": self.browse, "Scan": self.scan, "Apply": self.apply,
-            "Undo": self.undo, "Setup AI": self.setup, "Settings": self.settings,
-        }, self.path)
+        self.search_panel.folder.setText(self.config.get("search_root"))
+        self.search_panel.searchRequested.connect(self._search)
+        self.search_panel.cancelRequested.connect(self._cancel_search)
         self.tabs.addTab(organize_page, "Organize Files")
         self.tabs.addTab(self.search_panel, "AI Search")
         self.progress = QProgressBar()
@@ -120,15 +118,15 @@ class MainWindow(QMainWindow):
         self.preview.set_dark(self.config.get("theme") == "dark")
 
     def _buttons(self):
-        busy = self.worker is not None
+        busy = self.worker is not None or self.search_worker is not None
         self.apply.setEnabled(not busy and self.ctx.runtime.available and bool(self.plan and self.plan.actions))
         self.undo.setEnabled(not busy and self.ctx.journal.get_latest_batch() is not None)
-        self.scan.setText("Stop" if busy and self._job_kind == "scan" else "Scan")
-        self.scan.setEnabled(not busy or self._job_kind == "scan")
+        scanning = self.worker is not None and self._job_kind == "scan"
+        self.scan.setText("Stop" if scanning else "Scan")
+        self.scan.setEnabled(not busy or scanning)
         for widget in (self.path, self.browse, self.sample, self.setup, self.settings, self.preview):
             widget.setEnabled(not busy)
-        # Keep sidebar copies disabled/enabled when a background job starts.
-        self.search_panel.sync_organizer_controls()
+        self.search_panel.set_external_busy(self.worker is not None)
         self.backend.setText(self.ctx.runtime.backend_label)
 
     def _invalidate(self, *_):
@@ -193,6 +191,8 @@ class MainWindow(QMainWindow):
         self._buttons()
 
     def _scan(self):
+        if self.search_worker:
+            return
         if self.worker:
             self.worker.cancel()
             self.scan.setEnabled(False)
@@ -229,7 +229,7 @@ class MainWindow(QMainWindow):
             if cancelled():
                 raise InterruptedError("Scan stopped")
             plan = Planner(self.ctx.runtime, progress_cb=status, cancelled=cancelled,
-                           shortcuts_movable=shortcuts).plan(inventory)
+                           shortcuts_movable=shortcuts, executables_movable=executables).plan(inventory)
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
@@ -275,6 +275,8 @@ class MainWindow(QMainWindow):
         self._start("undo", operation)
 
     def _start(self, kind, operation):
+        if self.search_worker:
+            return
         self._job_kind = kind
 
         def work(status, progress, cancelled):
@@ -337,6 +339,53 @@ class MainWindow(QMainWindow):
         if self._close_pending:
             self.close()
 
+    def _search(self, query):
+        if self.worker or self.search_worker:
+            return
+        root = Path(self.search_panel.folder.text().strip()).expanduser()
+        valid, reason = validate_root_selection(root)
+        if not valid:
+            self.search_panel.set_status(reason)
+            return
+        if not self.ctx.runtime.available:
+            self.search_panel.set_status("Set up the local AI engine and Qwen model before searching.")
+            self._setup()
+            return
+        root = root.resolve()
+        self.config.set("search_root", str(root))
+        self.search_panel.set_searching(True)
+
+        def operation(status, progress, cancelled):
+            return self.ctx.search.search(root, query, status, progress, cancelled)
+
+        self.search_worker = Worker(operation, self)
+        self.search_worker.status.connect(self.search_panel.set_status)
+        self.search_worker.progress.connect(lambda value: self.search_panel.set_status(value[2]))
+        self.search_worker.finished.connect(self._search_finished)
+        self._buttons()
+        self.search_worker.start()
+
+    def _cancel_search(self):
+        if self.search_worker:
+            self.search_worker.cancel()
+            self.search_panel.cancel_button.setEnabled(False)
+            self.search_panel.set_status("Stopping search…")
+
+    def _search_finished(self):
+        worker = self.search_worker
+        self.search_worker = None
+        self.search_panel.set_searching(False)
+        if worker.error:
+            self.search_panel.set_status(f"Search failed: {worker.error}")
+        elif worker.stopped or worker.cancel_event.is_set():
+            self.search_panel.set_status("Search stopped.")
+        else:
+            self.search_panel.display_results(worker.result)
+        worker.deleteLater()
+        self._buttons()
+        if self._close_pending:
+            self.close()
+
     def _setup(self):
         FirstRunDialog(self.ctx, self).exec()
         self._invalidate()
@@ -348,6 +397,7 @@ class MainWindow(QMainWindow):
             self._theme()
             self._invalidate()
             self.ctx.runtime.shutdown()
+            self.ctx.search.exclude_patterns = self.config.get("exclude_patterns")
         self._buttons()
 
     def show_first_run_if_needed(self):
@@ -358,9 +408,12 @@ class MainWindow(QMainWindow):
                 self._setup()
 
     def closeEvent(self, event):
-        if self.worker:
+        if self.worker or self.search_worker:
             self._close_pending = True
-            self.worker.cancel()
+            if self.worker:
+                self.worker.cancel()
+            if self.search_worker:
+                self._cancel_search()
             self.status.setText("Finishing the current operation before closing…")
             event.ignore()
             return
