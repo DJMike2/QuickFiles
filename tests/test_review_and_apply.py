@@ -1,7 +1,9 @@
 """Independent review, stale-preview protection, verified moves and journal recovery boundaries."""
 import errno
 import json
-from pathlib import Path
+import os
+from contextlib import closing
+from pathlib import Path, PurePosixPath
 import sqlite3
 import tempfile
 from types import SimpleNamespace
@@ -111,11 +113,15 @@ class DirectoryCase(unittest.TestCase):
     def write(self, name, text):
         path = self.root / name
         path.parent.mkdir(parents=True, exist_ok=True)
+        previous = path.stat() if path.exists() else None
         path.write_text(text)
+        if previous:
+            # Model a later edit without assuming the filesystem clock advanced.
+            os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 2_000_000_000))
         return path
 
     def action(self, source, destination):
-        return PlanAction(source, 'move', source, destination, category=str(Path(destination).parent),
+        return PlanAction(source, 'move', source, destination, category=str(PurePosixPath(destination).parent),
                           source_identity=identity((self.root/source).stat()))
 
 
@@ -214,7 +220,9 @@ class ApplyVerificationTests(DirectoryCase):
 
     def test_source_replacement_and_destination_collision_preserve_all_inputs(self):
         a=self.write('a.txt','Original A');action=self.action('a.txt','Subject/a.txt')
-        a.unlink();a.write_text('Original A')
+        # Keep the old inode allocated so a fast recreate cannot reuse it in CI.
+        a.rename(self.root/'retired-a.txt');a.write_text('Original A')
+        self.assertNotEqual(identity(a.stat()), action.source_identity)
         result=Executor(self.root,self.journal).apply([action])
         self.assertEqual(result.failed,1)
         action=self.action('a.txt','Subject/a.txt');self.write('Subject/a.txt','Occupied')
@@ -320,7 +328,7 @@ class ApplyVerificationTests(DirectoryCase):
         self.journal.close()
         # A minimal historical schema without the added checksum column.
         old=self.base/'old.db'
-        with sqlite3.connect(old) as c:
+        with closing(sqlite3.connect(old)) as c:
             c.executescript('''CREATE TABLE journal_batch(id INTEGER PRIMARY KEY,batch_uuid TEXT UNIQUE NOT NULL,
             root TEXT NOT NULL,applied_at REAL NOT NULL,action_count INTEGER DEFAULT 0,undone INTEGER DEFAULT 0);
             CREATE TABLE journal_op(id INTEGER PRIMARY KEY,batch_id INTEGER NOT NULL,op_order INTEGER NOT NULL,
@@ -329,6 +337,7 @@ class ApplyVerificationTests(DirectoryCase):
             c.execute('INSERT INTO journal_batch VALUES(1,?,?,0,1,0)',('historical',str(self.root)))
             c.execute("INSERT INTO journal_op(batch_id,op_order,op_type,src_abs,dst_abs,succeeded) VALUES(1,0,'move',?,?,1)",
                       (str(self.root/'a.txt'),str(self.root/'Subject/a.txt')))
+            c.commit()
         migrated=Journal(old);self.addCleanup(migrated.close)
         columns={r[1] for r in migrated.connection().execute('PRAGMA table_info(journal_op)')}
         self.assertIn('sha256',columns)
