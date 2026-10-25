@@ -137,6 +137,17 @@ def _windows_file_block_reason(path: Path) -> str:
 
 def checked_path(root: Path, relative: str) -> Path:
     path = root.joinpath(*relative_parts(relative))
+    return _checked_local_path(root, path)
+
+
+def checked_read_path(root: Path, relative: str) -> Path:
+    """Read-only searches accept local filenames without portable rename restrictions."""
+    if Path(relative).is_absolute() or '..' in Path(relative).parts:
+        raise BlockedPathError('Search path must stay inside the selected folder')
+    return _checked_local_path(root, root / relative)
+
+
+def _checked_local_path(root: Path, path: Path) -> Path:
     enforce_inside_root(path, root)
     enforce_not_blocked(path)
     if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):

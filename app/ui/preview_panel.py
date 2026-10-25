@@ -72,7 +72,7 @@ class DiffTreeModel(QAbstractItemModel):
         if role == Qt.ToolTipRole:
             if node.action:
                 action = node.action
-                return f"{action.src_rel} → {action.dst_rel}\n{action.confidence:.0%} confidence\n{action.reason}"
+                return f"{action.src_rel} → {action.dst_rel}\n{action.reason}"
             return node.rel_path
         if role == Qt.ForegroundRole:
             colors = {"new": "#55bbff" if self.dark else "#0077bb",
@@ -263,13 +263,12 @@ class PreviewPanel(QWidget):
             return
         node = current.data(Qt.UserRole)
         lines = [node.name, node.rel_path, "Folder" if node.is_dir else "File"]
+        if self.inventory and node.rel_path in self.inventory.protected_projects:
+            lines.extend(["", "Protected project folder. Contents are excluded and left unchanged."])
         if node.action:
             action = node.action
             lines.extend(["", f"From: {action.src_rel}", f"To: {action.dst_rel}",
-                          f"Category: {action.category}", f"Confidence: {action.confidence:.0%}",
-                          f"Reason: {action.reason}", f"Importance: {action.importance_score:.0%}"])
-            if action.content_summary_type:
-                lines.append(f"Content: {action.content_summary_type}")
+                          f"Category: {action.category}", f"Reason: {action.reason}"])
         self.details.setText("\n".join(lines))
 
     def _rename(self, node, name):
