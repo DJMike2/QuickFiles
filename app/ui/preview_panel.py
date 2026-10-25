@@ -6,17 +6,120 @@ from html import escape
 import uuid
 from pathlib import Path, PurePosixPath
 
-from PySide6.QtCore import QAbstractItemModel, QMimeData, QModelIndex, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QAbstractItemModel, QMimeData, QModelIndex, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QLabel, QSplitter, QTreeView,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QFrame, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy, QSplitter,
+    QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QVBoxLayout, QWidget,
 )
 
 from app.ai.schema import OrganizationPlan, PlanAction
 from app.core.naming import is_valid_filename
 from app.core.simulator import Simulator
 from app.core.validator import Validator
+
+# state: (label, light colour, dark colour). Struck-through states show where things left.
+STATES = {
+    "new": ("Moved here", "#0077bb", "#55bbff"),
+    "created_dir": ("New folder", "#1a7a1a", "#55e055"),
+    "removed": ("Removed", "#cc1111", "#ff5555"),
+}
+STRUCK = {"removed"}
+
+
+def _tooltip(node, after):
+    action = node.action
+    if action and not node.is_dir:
+        lines = ["🔵 Moved here", f"  From:  {action.src_rel}", f"  To:    {action.dst_rel}"]
+        if action.category:
+            lines.append(f"  Category: {action.category}")
+        if action.reason:
+            lines.append(f"  Reason: {action.reason}")
+        if after:
+            lines += ["", "✏  Double-click to rename, or drag to move"]
+        return "\n".join(lines)
+    if node.diff_state == "created_dir":
+        files = sum(1 for child in node.children if not child.is_dir)
+        return "🟢 New folder" + (f"\n  Contains: {files} file{'s' if files != 1 else ''} being moved here" if files else "")
+    if node.diff_state == "removed":
+        return "🔴 Removed\n  This folder no longer exists after the plan."
+    return f"{'📁 Folder' if node.is_dir else '📄 File'}  {node.name}\n  Path: {node.rel_path or '/'}"
+
+
+class DiffItemDelegate(QStyledItemDelegate):
+    """Draws the name in its state colour and a dimmer italic [label] after it."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dark = False
+
+    def paint(self, painter, option, index):
+        node = index.data(Qt.UserRole)
+        if node is None:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QStyle()
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+        state = STATES.get(node.diff_state)
+        selected = bool(option.state & QStyle.State_Selected)
+        if selected:
+            color = option.palette.highlightedText().color()
+        elif state:
+            color = QColor(state[2] if self.dark else state[1])
+        else:
+            color = option.palette.text().color()
+        name = ("📁 " if node.is_dir else "   ") + node.name
+        suffix = f"  [{state[0]}]" if state else ""
+        rect = opt.rect.adjusted(4, 0, -4, 0)
+        if not opt.icon.isNull():
+            rect = rect.adjusted(opt.decorationSize.width() + 4, 0, 0, 0)
+        font = QFont(option.font)
+        font.setBold(node.diff_state in {"new", "created_dir"})
+        painter.save()
+        painter.setFont(font)
+        painter.setPen(QPen(color))
+        painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, name)
+        width = min(QFontMetrics(font).horizontalAdvance(name), rect.width())
+        if node.diff_state in STRUCK:
+            middle = rect.top() + rect.height() // 2
+            painter.setPen(QPen(color, 1.5))
+            painter.drawLine(rect.left(), middle, rect.left() + width, middle)
+        if suffix:
+            label_font = QFont(option.font)
+            label_font.setItalic(True)
+            label_font.setPointSize(max(label_font.pointSize() - 1, 8))
+            dim = QColor(color)
+            dim.setAlpha(200 if selected else 160)
+            painter.setFont(label_font)
+            painter.setPen(QPen(dim))
+            painter.drawText(QRect(rect.left() + width, rect.top(), rect.width() - width, rect.height()),
+                             Qt.AlignVCenter | Qt.AlignLeft, suffix)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        return QSize(hint.width() + 90, max(hint.height(), 22))
+
+    def createEditor(self, parent, option, index):
+        editor = QLineEdit(parent)
+        editor.setFrame(False)
+        editor.setStyleSheet(
+            "QLineEdit { padding:0 4px; margin:0; border:1.5px solid #4d9fff; border-radius:3px; "
+            + ("background:#28305a; color:#e2e4f0; }" if self.dark else "background:#ffffff; color:#1a1a1a; }")
+        )
+        return editor
+
+    def setEditorData(self, editor, index):
+        editor.setText(str(index.data(Qt.EditRole) or ""))
+        editor.selectAll()
+
+    def updateEditorGeometry(self, editor, option, index):
+        rect = option.rect.adjusted(2, 0, 0, 0)
+        rect.setHeight(max(rect.height(), editor.fontMetrics().height() + 6))
+        editor.setGeometry(rect)
 
 
 class DiffTreeModel(QAbstractItemModel):
@@ -68,22 +171,10 @@ class DiffTreeModel(QAbstractItemModel):
         if role == Qt.EditRole:
             return node.name
         if role == Qt.DisplayRole:
-            suffix = {"new": "  [Moved here]", "created_dir": "  [new]"}.get(node.diff_state, "")
+            suffix = f"  [{STATES[node.diff_state][0]}]" if node.diff_state in STATES else ""
             return ("📁 " if node.is_dir else "") + node.name + suffix
         if role == Qt.ToolTipRole:
-            if node.action:
-                action = node.action
-                # Reasons now contain literal document excerpts, including possible HTML.
-                return "<qt>" + escape(f"{action.src_rel} → {action.dst_rel}\n{action.reason}").replace("\n", "<br>") + "</qt>"
-            return "<qt>" + escape(node.rel_path) + "</qt>"
-        if role == Qt.ForegroundRole:
-            colors = {"new": "#55bbff" if self.dark else "#0077bb",
-                      "created_dir": "#55e055" if self.dark else "#1a7a1a"}
-            return QColor(colors[node.diff_state]) if node.diff_state in colors else None
-        if role == Qt.FontRole and node.diff_state != "unchanged":
-            font = QFont()
-            font.setBold(True)
-            return font
+            return "<qt>" + escape(_tooltip(node, self.editable)).replace("\n", "<br>") + "</qt>"
         return None
 
     def flags(self, index):
@@ -92,9 +183,7 @@ class DiffTreeModel(QAbstractItemModel):
         flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         node = index.internalPointer()
         if self.editable:
-            flags |= Qt.ItemIsDropEnabled | Qt.ItemIsDragEnabled
-            if not node.is_dir or node.diff_state == "created_dir":
-                flags |= Qt.ItemIsEditable
+            flags |= Qt.ItemIsDropEnabled | Qt.ItemIsDragEnabled | Qt.ItemIsEditable
         return flags
 
     def supportedDropActions(self):
@@ -155,6 +244,30 @@ class DiffTreeModel(QAbstractItemModel):
         return self.rename(node, name)
 
 
+class _FolderTree(QTreeView):
+    """Any click left of a folder's name opens or closes it, not just the small arrow."""
+
+    def _margin_folder(self, event):
+        index = self.indexAt(event.position().toPoint())
+        if (event.button() == Qt.LeftButton and index.isValid() and self.model().hasChildren(index)
+                and event.position().x() < self.visualRect(index).left()):
+            return index
+        return None
+
+    def mousePressEvent(self, event):
+        index = self._margin_folder(event)
+        if index is None:
+            super().mousePressEvent(event)
+        else:
+            self.setExpanded(index, not self.isExpanded(index))
+
+    def mouseDoubleClickEvent(self, event):
+        # Qt already delivered a press for this click; swallow the double-click so it neither
+        # toggles back nor starts renaming.
+        if self._margin_folder(event) is None:
+            super().mouseDoubleClickEvent(event)
+
+
 class PreviewPanel(QWidget):
     planChanged = Signal(object)
     editRejected = Signal(str)
@@ -168,26 +281,60 @@ class PreviewPanel(QWidget):
         self._pending_edit = False
         self._order = None
         self._displaced = set()
+        self._dark = False
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Horizontal)
         layout.addWidget(splitter)
+        trees = QSplitter(Qt.Horizontal)
+        splitter.addWidget(trees)
         self.models = []
         self.trees = []
-        self.headers = []
+        self.delegates = []
         for title, editable in (("Before", False), ("After", True)):
             panel = QWidget()
             column = QVBoxLayout(panel)
-            column.setContentsMargins(3, 0, 3, 0)
+            column.setContentsMargins(4, 4, 4, 2)
+            column.setSpacing(2)
+            header_row = QWidget()
+            header_row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            header = QHBoxLayout(header_row)
+            header.setContentsMargins(0, 0, 0, 0)
+            header.setSpacing(6)
             label = QLabel(title)
-            font = label.font()
-            font.setBold(True)
-            label.setFont(font)
-            column.addWidget(label)
-            tree = QTreeView()
+            label.setStyleSheet("font-weight:600; font-size:13px;")
+            header.addWidget(label)
+            if editable:
+                self.badge = QLabel()
+                self.badge.hide()
+                header.addWidget(self.badge)
+                separator = QLabel("│")
+                separator.setStyleSheet("color:#888; font-size:11px;")
+                header.addWidget(separator)
+                self.legend = QLabel()
+                self.legend.setTextFormat(Qt.RichText)
+                self.legend.setStyleSheet("font-size:10px;")
+                self.legend.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                header.addWidget(self.legend)
+                # The hint absorbs any shortage of width so the legend is never covered.
+                hint = QLabel("✏ Double-click: rename · Drag: move")
+                hint.setStyleSheet("font-size:10px; color:#888; font-style:italic; margin-left:6px;")
+                hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                header.addWidget(hint, 1)
+            else:
+                header.addStretch()
+            column.addWidget(header_row)
+            tree = _FolderTree()
             tree.setHeaderHidden(True)
+            tree.setAnimated(True)
             tree.setUniformRowHeights(True)
             tree.setAlternatingRowColors(True)
+            tree.setMouseTracking(True)
+            # Folders open from the arrow only; double-click is reserved for renaming.
+            tree.setExpandsOnDoubleClick(False)
+            delegate = DiffItemDelegate(tree)
+            tree.setItemDelegate(delegate)
+            self.delegates.append(delegate)
             tree.setEditTriggers(
                 QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed if editable
                 else QAbstractItemView.NoEditTriggers
@@ -204,23 +351,34 @@ class PreviewPanel(QWidget):
                 tree.setDefaultDropAction(Qt.MoveAction)
             tree.selectionModel().currentChanged.connect(self._selected)
             column.addWidget(tree)
-            splitter.addWidget(panel)
+            trees.addWidget(panel)
             self.models.append(model)
             self.trees.append(tree)
-            self.headers.append(label)
+        trees.setSizes([500, 500])
         details = QWidget()
-        details.setMinimumWidth(180)
+        details.setMinimumWidth(190)
         details.setMaximumWidth(280)
-        detail_layout = QVBoxLayout(details)
-        detail_layout.addWidget(QLabel("Details"))
-        self.details = QLabel("Select a file to see its details.")
-        self.details.setWordWrap(True)
-        self.details.setTextFormat(Qt.PlainText)
-        self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        detail_layout.addWidget(self.details)
-        detail_layout.addStretch()
+        details.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        outer = QVBoxLayout(details)
+        outer.setContentsMargins(8, 8, 8, 8)
+        title = QLabel("Details")
+        title.setStyleSheet("font-weight:600; font-size:13px;")
+        outer.addWidget(title)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+        content = QWidget()
+        self.details = QVBoxLayout(content)
+        self.details.setAlignment(Qt.AlignTop)
+        self.details.setSpacing(6)
+        scroll.setWidget(content)
         splitter.addWidget(details)
-        splitter.setSizes([450, 450, 220])
+        splitter.setSizes([860, 200])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        self._refresh_legend()
+        self._show_details(None)
 
     def clear(self):
         self.inventory = None
@@ -229,8 +387,74 @@ class PreviewPanel(QWidget):
         self._displaced = set()
         for model in self.models:
             model.set_root(None)
-        self.details.setText("Select a file to see its details.")
-        self.headers[1].setText("After")
+        self.badge.hide()
+        self._show_details(None)
+
+    def _refresh_legend(self):
+        entries = []
+        for state, (text, light, dark) in STATES.items():
+            mark = "✕" if state in STRUCK else "●"
+            entries.append(f"<span style='color:{dark if self._dark else light}'>{mark}&nbsp;{text}</span>")
+        self.legend.setText("&nbsp;&nbsp;".join(entries))
+
+    def _set_badge(self, count):
+        if count:
+            color, text = ("#2a9a2a" if self._dark else "#1a7a1a"), "#ffffff"
+        else:
+            color, text = ("#555577" if self._dark else "#9090a0"), "#ccccdd"
+        self.badge.setStyleSheet(f"font-size:11px; font-weight:700; padding:1px 7px; "
+                                 f"border-radius:9px; background:{color}; color:{text};")
+        held = len(self.plan.review.get('held', {})) if self.plan else 0
+        self.badge.setText(f"{count:,} changes" + (f" · {held:,} held by review" if held else ''))
+        self.badge.show()
+
+    def _show_details(self, node):
+        while self.details.count():
+            item = self.details.takeAt(0)
+            if item.widget():
+                item.widget().hide()
+                item.widget().deleteLater()
+        if node is None:
+            placeholder = QLabel("Select a file in the preview\nto see details.")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet("color:#888; font-size:12px;")
+            self.details.addWidget(placeholder)
+            return
+        self._row("Name", node.name)
+        self._row("Path", node.rel_path or "/")
+        self._row("Type", "Folder" if node.is_dir else "File")
+        state = STATES.get(node.diff_state)
+        self._row("Status", state[0] if state else "Unchanged",
+                  (state[2] if self._dark else state[1]) if state else "#888")
+        if self.inventory and node.rel_path in self.inventory.protected_projects:
+            self._row("Protected", "Project folder. Contents are excluded and left unchanged.", "#888")
+        if node.action:
+            action = node.action
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setStyleSheet("color:#ddd;")
+            self.details.addWidget(line)
+            self._row("From", action.src_rel)
+            self._row("To", action.dst_rel)
+            self._row("Category", action.category)
+            self._row("Reason", action.reason)
+        self.details.addStretch()
+
+    def _row(self, label, value, color=""):
+        row = QWidget()
+        column = QVBoxLayout(row)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(1)
+        name = QLabel(label)
+        name.setStyleSheet("color:#888; font-size:11px;")
+        text = QLabel(value)
+        text.setTextFormat(Qt.PlainText)
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        text.setStyleSheet(f"color:{color}; font-size:12px;" if color else "font-size:12px;")
+        column.addWidget(name)
+        column.addWidget(text)
+        self.details.addWidget(row)
 
     def set_plan(self, inventory, plan, shortcuts_movable=False, executables_movable=False):
         if any(a.type != 'mkdir' and a.source_identity is None for a in plan.actions):
@@ -248,42 +472,44 @@ class PreviewPanel(QWidget):
         before, after = Simulator(Path(inventory.root)).build_trees(
             inventory, plan, self._order, self._displaced,
         )
-        held = len(plan.review.get('held', {}))
-        self.headers[1].setText(f"After · {len(plan.actions):,} changes"
-            + (f" · {held:,} held by review" if held else '')
-            + " · drag above, below, or into a folder")
+        pending = [before]
+        while pending:
+            node = pending.pop()
+            if node.is_dir and node.rel_path in self._displaced:
+                node.diff_state = "removed"
+            pending.extend(node.children)
+        self._set_badge(len(plan.actions))
         for model, tree, root in zip(self.models, self.trees, (before, after)):
             model.set_root(root)
             if inventory.total_files < 40:
                 tree.expandAll()
             else:
                 tree.expandToDepth(0)
-        self.details.setText("Blue: moved here\nGreen: new folder\n\nSelect a file to see its details.")
+        self._show_details(None)
 
     def set_dark(self, dark):
-        for model in self.models:
+        self._dark = dark
+        for model, delegate in zip(self.models, self.delegates):
             model.dark = dark
+            delegate.dark = dark
         for tree in self.trees:
             tree.viewport().update()
+        self._refresh_legend()
+        if self.badge.isVisible() and self.plan is not None:
+            self._set_badge(len(self.plan.actions))
 
     def _selected(self, current, previous):
-        if not current.isValid():
-            return
-        node = current.data(Qt.UserRole)
-        lines = [node.name, node.rel_path, "Folder" if node.is_dir else "File"]
-        if self.inventory and node.rel_path in self.inventory.protected_projects:
-            lines.extend(["", "Protected project folder. Contents are excluded and left unchanged."])
-        if node.action:
-            action = node.action
-            lines.extend(["", f"From: {action.src_rel}", f"To: {action.dst_rel}",
-                          f"Category: {action.category}", f"Reason: {action.reason}"])
-        self.details.setText("\n".join(lines))
+        if current.isValid():
+            self._show_details(current.data(Qt.UserRole))
 
     def _rename(self, node, name):
         if self.plan is None or self._pending_edit:
             return False
         old = node.rel_path
         new = str(PurePosixPath(old).with_name(name))
+        if node.is_dir and node.diff_state != "created_dir":
+            # Renaming an existing folder moves its contents, like dragging it to a new name.
+            return self._move(node, new)
         actions = copy.deepcopy(self.plan.actions)
         changed = False
         for action in actions:

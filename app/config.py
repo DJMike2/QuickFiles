@@ -18,9 +18,9 @@ DEFAULTS = {
     "exclude_patterns": ["*.tmp", "~$*", "Thumbs.db", ".DS_Store"],
     "max_files_per_scan": DEFAULT_MAX_FILES,
     "content_read_bytes": DEFAULT_CONTENT_READ_BYTES,
-    "shortcuts_movable": False,
-    "executables_movable": False,
-    "duplicate_suffix_allowed": True,
+    "shortcuts_movable": True,
+    "executables_movable": True,
+    "watch_new_files": False,
     "window_geometry": None,
 }
 
@@ -51,7 +51,7 @@ class AppConfig:
             logging.getLogger(__name__).warning("Could not read preferences: %s", exc)
         # Older settings used one switch for both shortcuts and executables.
         if isinstance(stored, dict) and "executables_movable" not in stored:
-            self._data["executables_movable"] = bool(stored.get("shortcuts_movable", False))
+            self._data["executables_movable"] = bool(stored.get("shortcuts_movable", True))
 
     def get(self, key, default=None):
         return self._data.get(key, default)
