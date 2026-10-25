@@ -1,5 +1,6 @@
-"""Read-only file search: rewrite, update a local vector cache, retrieve, report."""
+"""Read-only file search: plan the request, update a local file map, retrieve, report."""
 from contextlib import closing
+from datetime import date
 import fnmatch
 import os
 from pathlib import Path
@@ -11,18 +12,87 @@ import numpy as np
 
 from app.ai.content import read_content
 from app.ai.llm_server import LLMServerError
+from app.constants import SEARCH_KINDS
 from app.core.blocked_paths import checked_read_path, resolve_safe, validate_root_selection
 from app.core.inventory import FileEntry
 
 SKIP_DIRECTORIES = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', 'build', 'dist'}
+# Bump when the indexed document format changes so cached vectors are rebuilt.
+INDEX_FORMAT = 'map2'
+# Minimum hybrid score for a match; a kind or format filter already vouches for every
+# candidate, so less meaning evidence is needed then ("python scripts about parsing").
+MATCH_SCORE = .48
+FILTERED_MATCH_SCORE = .32
+# Keyword evidence from the model's synonyms counts less than the user's own words.
+EXPANSION_WEIGHT = .6
+# Keywords this generic match nearly every file, so they carry no signal.
+GENERIC_WORDS = set('''a an the my me i we our your of and or for in on at to from by with about all any
+    some this that these those it is are was be have has where which what find show get give list
+    want need looking look search file files folder document documents stuff thing things'''.split())
+# Common filename abbreviations, so "lecture" finds Lec14.pdf and "homework" finds HW6.pdf.
+ABBREVIATIONS = {'hw': 'homework', 'hws': 'homework', 'lec': 'lecture', 'lect': 'lecture',
+                 'sol': 'solution', 'sols': 'solutions', 'soln': 'solution', 'solns': 'solutions',
+                 'asgn': 'assignment', 'assn': 'assignment', 'proj': 'project', 'ch': 'chapter',
+                 'chap': 'chapter', 'img': 'image', 'pic': 'picture', 'pics': 'pictures', 'vid': 'video',
+                 'doc': 'document', 'docs': 'documents', 'cv': 'resume', 'rpt': 'report'}
+
+
+def file_kinds(extension):
+    return [kind for kind, extensions in SEARCH_KINDS.items() if extension in extensions]
+
+
+def readable(text):
+    """Split names like CMPSC473_PracticeMidterm into words; spell out abbreviations (HW2 -> homework 2)."""
+    text = re.sub(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])', ' ', text)
+    words = re.sub(r'[\W_]+', ' ', text).split()
+    spelled = [ABBREVIATIONS.get(word.lower(), word) for word in words]
+    return ' '.join(words if spelled == words else words + ['/'] + spelled)
+
+
+def keyword_pattern(keyword):
+    """Match a keyword or phrase in readable text, or None when it is too short to mean anything."""
+    parts = re.findall(r'[^\W\d_]+|\d+', keyword)
+    if sum(map(len, parts)) < 2:
+        return None
+    # Plurals are folded, so "stats" matches STAT and "solution" matches solutions.
+    parts = [part[:-1] if len(part) > 3 and part.endswith('s') and not part.endswith(('ss', 'us', 'is'))
+             else part for part in parts]
+    body = r'[\W_]*'.join(re.escape(part) for part in parts)
+    # Letters may not touch the keyword (hw must not match "show") but digits may (hw6),
+    # except after a trailing number: "homework 2" must not match "homework 21".
+    end = r'(?!\d)' if parts[-1].isdigit() else r'(?:e?s)?(?![^\W\d_])'
+    return re.compile(rf'(?<![^\W\d_]){body}{end}')
+
+
+def own_terms(text, noise):
+    """The user's own words, keeping a number with the word before it ("homework 2", "lab 4")."""
+    words = re.findall(r'[^\W\d_]+|\d+', text.casefold())
+    terms = []
+    for index, word in enumerate(words):
+        if word.isdigit() and terms and words[index - 1] == terms[-1]:
+            terms[-1] += ' ' + word
+        elif word not in noise:
+            terms.append(word)
+    return list(dict.fromkeys(terms))
+
+
+def mib(value):
+    return f'{value / 1024:g} GB' if value >= 1024 else f'{value:g} MB'
 
 
 class FileSearch:
-    def __init__(self, database_path, runtime, embeddings, exclude_patterns=None):
+    max_results = 10
+
+    def __init__(self, database_path, runtime, embeddings, exclude_patterns=None, excerpt_chars=2000):
         self.database_path = Path(database_path)
         self.runtime = runtime
         self.embeddings = embeddings
         self.exclude_patterns = exclude_patterns or []
+        self.excerpt_chars = excerpt_chars
+
+    @property
+    def encoder(self):
+        return f'{self.embeddings.fingerprint}:{INDEX_FORMAT}'
 
     def search(self, root, query, status_cb=None, progress_cb=None, cancelled=None):
         status = status_cb or (lambda message: None)
@@ -42,7 +112,7 @@ class FileSearch:
             raise ValueError('Enter a search request of 1–12,000 characters')
         if not self.runtime.available:
             raise LLMServerError('Set up the local AI engine and Qwen model before searching')
-        status('Clarifying your search…')
+        status('Understanding your search…')
         request = self.runtime.rewrite_query(query, status, cancelled)
         check()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +128,14 @@ class FileSearch:
             check()
             return self._retrieve(root, query, request, rows, skipped, status, progress_cb, cancelled)
 
+    def _document(self, relative, text):
+        """The text embedded for one file: its readable name, folder, kind and excerpt."""
+        path = Path(relative)
+        folder = readable(path.parent.as_posix()) if path.parent != Path('.') else 'top level'
+        kinds = file_kinds(path.suffix.lower())
+        kind = f"{' '.join(kinds) or 'other'} file ({path.suffix.lower() or 'no extension'})"
+        return f'{readable(path.stem)}\nFolder: {folder}\nKind: {kind}\n{text}'
+
     def _index(self, connection, root, check, status, progress, cancelled):
         cached = {row['path']: dict(row) for row in connection.execute(
             'SELECT * FROM search_files WHERE root=?', (str(root),))}
@@ -69,7 +147,7 @@ class FileSearch:
             if not pending:
                 return
             check()
-            status(f'Indexing file meaning… {len(current):,} files checked')
+            status(f'Indexing file contents… {len(current):,} files checked')
             vectors = self.embeddings.embed([row['document'] for row in pending], status, progress, cancelled)
             check()
             for row, vector in zip(pending, vectors):
@@ -82,7 +160,7 @@ class FileSearch:
                 row['vector'] = vector.astype('<f4').tobytes()
                 connection.execute('INSERT OR REPLACE INTO search_files VALUES(?,?,?,?,?,?,?)',
                     (str(root), row['path'], row['mtime_ns'], row['size'], row['text'],
-                     row['vector'], self.embeddings.fingerprint))
+                     row['vector'], self.encoder))
                 current.append(row)
             connection.commit()
             pending.clear()
@@ -116,14 +194,14 @@ class FileSearch:
                     seen.add(relative)
                     old = cached.get(relative)
                     if (old and old['mtime_ns'] == info.st_mtime_ns and old['size'] == info.st_size
-                            and old['encoder'] == self.embeddings.fingerprint
+                            and old['encoder'] == self.encoder
                             and len(old['vector']) == self.embeddings.dimensions * 4):
                         current.append(old)
                         continue
                     entry = FileEntry(relative, name, path.suffix.lower(), str(path), size_bytes=info.st_size)
-                    text = read_content(entry, max_chars=600)
+                    text = read_content(entry, 64 * 1024, max_chars=self.excerpt_chars, detailed=True)
                     pending.append({'path': relative, 'mtime_ns': info.st_mtime_ns, 'size': info.st_size,
-                                    'text': text, 'document': f'{name}\n{Path(relative).parent}\n{text}'})
+                                    'text': text, 'document': self._document(relative, text)})
                     if len(pending) == 8:
                         flush()
                 except (OSError, ValueError, RuntimeError) as exc:
@@ -138,58 +216,130 @@ class FileSearch:
         connection.commit()
         return current, skipped
 
-    def _retrieve(self, root, original, request, rows, skipped, status, progress, cancelled):
+    @staticmethod
+    def _filtered(rows, request):
         include = set(request['extensions'])
+        for kind in request.get('kinds', []):
+            include |= SEARCH_KINDS[kind]
         exclude = set(request['exclude_extensions'])
-        candidates = []
+        low = request.get('min_size_mb', 0) * 1024 * 1024
+        high = request.get('max_size_mb', 0) * 1024 * 1024
+        after = request.get('modified_after') or ''
+        before = request.get('modified_before') or ''
+        kept = []
         for row in rows:
             extension = Path(row['path']).suffix.lower()
-            haystack = (row['path'] + '\n' + row['text']).casefold()
             if include and extension not in include or extension in exclude:
                 continue
-            if any(term in haystack for term in request['exclude_terms']):
+            if any(term in row['path'].casefold() for term in request['exclude_terms']):
                 continue
-            candidates.append(row)
-        results = []
-        matched = 0
-        if candidates:
+            if low and row['size'] < low or high and row['size'] > high:
+                continue
+            if after or before:
+                modified = date.fromtimestamp(row['mtime_ns'] / 1e9).isoformat()
+                if after and modified < after or before and modified > before:
+                    continue
+            kept.append(row)
+        return kept
+
+    @staticmethod
+    def _describe(request):
+        parts = []
+        formats = request.get('kinds', []) + [x.lstrip('.').upper() for x in request['extensions']]
+        if formats:
+            parts.append(' or '.join(formats) + ' files')
+        if request.get('min_size_mb'):
+            parts.append(f"larger than {mib(request['min_size_mb'])}")
+        if request.get('max_size_mb'):
+            parts.append(f"smaller than {mib(request['max_size_mb'])}")
+        if request.get('modified_after'):
+            parts.append(f"modified since {request['modified_after']}")
+        if request.get('modified_before'):
+            parts.append(f"modified before {request['modified_before']}")
+        if request['exclude_extensions'] or request['exclude_terms']:
+            parts.append('excluding ' + ', '.join(request['exclude_extensions'] + request['exclude_terms']))
+        if request.get('sort', 'relevance') != 'relevance':
+            parts.append({'newest': 'newest first', 'oldest': 'oldest first',
+                          'largest': 'largest first', 'smallest': 'smallest first'}[request['sort']])
+        return '; '.join(parts)
+
+    def _retrieve(self, root, original, request, rows, skipped, status, progress, cancelled):
+        candidates = self._filtered(rows, request)
+        topic = request['query'].strip()
+        metadata_only = not topic and bool(self._describe(request))
+        if not topic and not metadata_only:
+            topic = original  # The model found neither a topic nor a filter; search the words as typed.
+        ranked = []
+        if candidates and metadata_only:
+            ranked = [(1., row) for row in candidates]
+        elif candidates:
             status('Finding matching files…')
-            queries = self.embeddings.embed([request['query'], original[:1000]], status, progress, cancelled)
+            queries = self.embeddings.embed([topic, original[:1000]], status, progress, cancelled, query=True)
             vector = .75 * queries[0] + .25 * queries[1]
             vector /= max(float(np.linalg.norm(vector)), 1e-12)
             matrix = np.stack([np.frombuffer(row['vector'], dtype='<f4') for row in candidates])
             scores = matrix @ vector
-            terms = set(re.findall(r'[a-z0-9]+', request['query'].casefold())) - {
-                'the', 'a', 'an', 'my', 'find', 'show', 'me', 'files', 'file', 'about', 'and', 'for', 'in', 'please'}
+            noise = GENERIC_WORDS | set(SEARCH_KINDS)
+            if request['extensions']:
+                # The format is already enforced; otherwise "cpp" may pick C++ out of all code.
+                noise |= {x.lstrip('.') for extensions in SEARCH_KINDS.values() for x in extensions}
+            own = [p for p in map(keyword_pattern, own_terms(original[:1000], noise)) if p]
+            expansions = own_terms(topic, noise) + [k for k in request.get('keywords', []) if k not in noise]
+            extra = [p for p in map(keyword_pattern, dict.fromkeys(expansions)) if p]
             for index, row in enumerate(candidates):
-                title = set(re.findall(r'[a-z0-9]+', row['path'].casefold()))
-                scores[index] += .15 * len(terms & title) / max(len(terms), 1)
-            ranked = np.argsort(-scores)
-            for index in ranked:
-                if cancelled():
-                    raise InterruptedError('Search stopped')
-                if scores[index] < .25:
+                path = Path(row['path'])
+                fields = ((readable(path.stem) + ' ' + path.suffix[1:]).casefold(),
+                          readable(path.parent.as_posix()).casefold(), row['text'].casefold())
+                own_hits = [sum(1 for p in own if p.search(field)) for field in fields]
+                extra_hits = [sum(1 for p in extra if p.search(field)) for field in fields]
+                # Hybrid ranking: meaning from the embedding plus exact keyword evidence in the
+                # name, folder and text, which catches abbreviations (HW6) a small encoder misreads.
+                for weight, mine, theirs in zip((.22, .10, .08), own_hits, extra_hits):
+                    scores[index] += weight * (1. if mine else EXPANSION_WEIGHT if theirs else 0.)
+                scores[index] += .03 * min(sum(own_hits) + sum(extra_hits), 4)
+                # Matching more of the user's words in the name or folder means a closer match.
+                named = sum(1 for p in own if p.search(fields[0]) or p.search(fields[1]))
+                scores[index] += .12 * named / max(len(own), 1)
+            threshold = FILTERED_MATCH_SCORE if request.get('kinds') or request['extensions'] else MATCH_SCORE
+            for index in np.argsort(-scores):
+                if scores[index] < threshold:
                     break
-                row = candidates[index]
-                try:
-                    path = checked_read_path(root, row['path'])
-                    if not path.is_file():
-                        continue
-                except (OSError, ValueError, RuntimeError):
+                ranked.append((min(1., float(scores[index])), candidates[index]))
+        if request.get('sort', 'relevance') != 'relevance' or metadata_only:
+            order = {'newest': lambda item: -item[1]['mtime_ns'], 'oldest': lambda item: item[1]['mtime_ns'],
+                     'largest': lambda item: -item[1]['size'], 'smallest': lambda item: item[1]['size']}
+            ranked.sort(key=order.get(request.get('sort'), order['newest']))
+            # The graph orders results by score, so scores follow the requested order.
+            ranked = [(1 - index / max(len(ranked), 1), row) for index, (_, row) in enumerate(ranked)]
+        results = []
+        matched = 0
+        for score, row in ranked:
+            if cancelled():
+                raise InterruptedError('Search stopped')
+            try:
+                path = checked_read_path(root, row['path'])
+                if not path.is_file():
                     continue
-                matched += 1
-                if len(results) < 10:
-                    results.append({'id': row['path'], 'name': path.name, 'path': str(path),
-                                    'type': path.suffix.lstrip('.'), 'score': min(1., float(scores[index])),
-                                    'size_bytes': row['size'], 'modified': row['mtime_ns'] / 1e9})
+            except (OSError, ValueError, RuntimeError):
+                continue
+            matched += 1
+            if len(results) < self.max_results:
+                results.append({'id': row['path'], 'name': path.name, 'path': str(path),
+                                'type': path.suffix.lstrip('.'), 'score': score,
+                                'size_bytes': row['size'], 'modified': row['mtime_ns'] / 1e9})
+        filters = self._describe(request)
         if matched:
-            answer = f"Found {matched:,} matching {'file' if matched == 1 else 'files'}."
+            answer = f"Found {matched:,} matching {'file' if matched == 1 else 'files'}"
+            answer += f' ({filters}).' if filters else '.'
             if matched > len(results):
                 answer += f' Showing the top {len(results)}.'
         else:
-            answer = 'No close matches found in this folder. Try a different description or file type.'
+            answer = 'No close matches found in this folder'
+            answer += f' ({filters}).' if filters else '.'
+            answer += ' Try a different description or file type.'
         answer += f" Searched {len(rows):,} indexed {'file' if len(rows) == 1 else 'files'}."
         if skipped:
             answer += f' Skipped {skipped:,} inaccessible files.'
-        return {'query': original, 'normalized_query': request['query'], 'root': str(root),
-                'answer': answer, 'matched_files': matched, 'indexed_files': len(rows), 'results': results}
+        return {'query': original, 'normalized_query': topic or filters, 'root': str(root),
+                'answer': answer, 'matched_files': matched, 'indexed_files': len(rows),
+                'request': request, 'results': results}

@@ -26,6 +26,21 @@ class BlockedPathError(ValueError):
     pass
 
 
+def enforce_project_boundary(root: Path, path: Path):
+    """Recheck the native scanner's markers and special project names before writes."""
+    from app.core.scanner import PROJECT_MARKERS
+    markers = {name.casefold() for name in PROJECT_MARKERS}
+    for parent in path.parents:
+        if parent == root:
+            break  # The explicitly selected root follows the scanner's root policy.
+        protected = parent.name.casefold() == 'issetupprerequisites'
+        if not protected and parent.is_dir():
+            protected = any(child.name.casefold() in markers
+                            or child.name.casefold().endswith(('.sln', '.csproj')) for child in parent.iterdir())
+        if protected:
+            raise BlockedPathError(f'Application/project folder is protected: {parent.name}')
+
+
 def resolve_safe(path: Path) -> Path:
     # Resolution errors must not bypass symlink checks.
     return path.expanduser().resolve()

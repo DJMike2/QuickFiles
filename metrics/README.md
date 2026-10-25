@@ -1,5 +1,20 @@
 # Recorded metrics
 
+The final independent review and verified apply/undo work is recorded in
+[organizer-completion.md](organizer-completion.md).
+
+The steps 6–8 organizer redesign and its generated/live-directory checks are
+recorded in [organizer-steps-6-8.md](organizer-steps-6-8.md). Historical results
+below are preserved separately.
+
+Fresh live-model tests across six generated messy directories, including actual
+apply/hash/undo checks and the failures found, are recorded in
+[organizer-independent-verification.md](organizer-independent-verification.md).
+
+The later organizer preparation evaluation is recorded separately in
+[organizer-first-half.md](organizer-first-half.md). The historical scanner results
+below retain their original scope and timings.
+
 Results recorded during the native scanner integration on **2026-10-25**.
 This report uses measurements and test output already collected in that session;
 the previous scanner and older benchmarks were **not rerun** for this report.

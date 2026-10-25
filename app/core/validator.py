@@ -12,8 +12,9 @@ from app.ai.schema import PlanWarning
 from app.constants import (
     EXECUTABLE_EXTENSIONS, LIBRARY_EXTENSIONS, LIVE_DATA_EXTENSIONS, SHORTCUT_EXTENSIONS,
 )
-from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
+from app.core.blocked_paths import checked_path, enforce_project_boundary, resolve_safe, validate_root_selection
 from app.core.naming import make_unique_dest, relative_parts
+from app.core.file_state import identity
 
 
 @dataclass
@@ -44,6 +45,8 @@ class Validator:
             raise ValueError("Moving shortcuts is disabled")
         if suffix in EXECUTABLE_EXTENSIONS and not self.executables_movable:
             raise ValueError("Moving executables is disabled")
+        if sys.platform != 'win32' and source.stat().st_mode & 0o111 and not self.executables_movable:
+            raise ValueError('Moving executable files requires explicit opt-in')
 
     def _project_warning(self):
         try:
@@ -84,6 +87,7 @@ class Validator:
                     raise ValueError("Invalid confidence")
                 action.dst_rel = "/".join(relative_parts(action.dst_rel))
                 destination = checked_path(self.root, action.dst_rel)
+                enforce_project_boundary(self.root, destination)
                 if action.type != "mkdir":
                     action.src_rel = "/".join(relative_parts(action.src_rel))
                     source = checked_path(self.root, action.src_rel)
@@ -92,6 +96,11 @@ class Validator:
                     if key(action.src_rel) in sources:
                         raise ValueError("More than one operation uses this source")
                     self._reject_immovable(source)
+                    enforce_project_boundary(self.root, source)
+                    snapshot = identity(source.stat())
+                    if action.source_identity is not None and action.source_identity != snapshot:
+                        raise ValueError('Source changed since preview; scan again')
+                    action.source_identity = snapshot
                     if key(action.src_rel) == key(action.dst_rel):
                         raise ValueError("Source and destination are identical")
                     if action.type == "move" and PurePosixPath(action.src_rel).parent == PurePosixPath(action.dst_rel).parent:

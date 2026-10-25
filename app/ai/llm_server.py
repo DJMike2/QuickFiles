@@ -21,6 +21,10 @@ class ContextTooLargeError(LLMServerError):
     pass
 
 
+class IncompleteResponseError(LLMServerError):
+    """The model exhausted its output budget; its partial response is unusable."""
+
+
 class LLMServer:
     def __init__(self, binary_manager, model_path, settings, *, embedding=False):
         self.binary_manager = binary_manager
@@ -66,7 +70,7 @@ class LLMServer:
                      "--port", str(self.port), "--ctx-size", str(self.settings["context_tokens"]),
                      "--n-gpu-layers", str(layers), "--threads", str(self.settings["threads"])]
                 if self.embedding:
-                    command += ["--embedding", "--pooling", "mean", "--parallel", "1",
+                    command += ["--embedding", "--pooling", self.settings["pooling"], "--parallel", "1",
                                 "--batch-size", "2048", "--ubatch-size", "2048"]
                 self._process = subprocess.Popen(
                     command,
@@ -119,6 +123,8 @@ class LLMServer:
             payload["grammar"] = grammar
         try:
             choice = self._request("chat/completions", payload)["choices"][0]
+            if choice.get("finish_reason") == "length":
+                raise IncompleteResponseError("The model did not finish its response. No partial plan will be used.")
             if choice.get("finish_reason") != "stop":
                 raise LLMServerError("The model did not finish its response. No partial plan will be used.")
             if choice["message"].get("reasoning_content"):
