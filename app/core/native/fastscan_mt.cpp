@@ -286,7 +286,8 @@ static Dir child_dir(Dir parent, const std::wstring& name) {
     NtObjectAttributes attributes{sizeof(attributes), parent, &unicode, 0, nullptr, nullptr};
     NtIoStatusBlock io{};
     HANDLE child = invalid_dir;
-    if (open_dir(&child, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attributes, &io, share_all,
+    // Unlike CreateFileW, NtOpenFile does not add FILE_READ_ATTRIBUTES, which the tag check needs.
+    if (open_dir(&child, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE, &attributes, &io, share_all,
                  0x00000001 | 0x00000020 | 0x00200000) < 0) return invalid_dir;
     FILE_ATTRIBUTE_TAG_INFO info{};
     if (!GetFileInformationByHandleEx(child, FileAttributeTagInfo, &info, sizeof(info)) ||
