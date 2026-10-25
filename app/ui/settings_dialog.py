@@ -28,10 +28,6 @@ class SettingsDialog(QDialog):
         self.theme.addItems(["light", "dark"])
         self.theme.setCurrentText(config.get("theme"))
         form.addRow("Theme", self.theme)
-        self.mode = QComboBox()
-        self.mode.addItems(["auto", "fast", "accurate"])
-        self.mode.setCurrentText(config.get("mode"))
-        form.addRow("Planning mode", self.mode)
         root_row = QWidget()
         row = QHBoxLayout(root_row)
         row.setContentsMargins(0, 0, 0, 0)
@@ -130,7 +126,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Invalid folder", reason)
             return
         self.ctx.config.update({
-            "theme": self.theme.currentText(), "mode": self.mode.currentText(),
+            "theme": self.theme.currentText(),
             "allowed_root": str(root.resolve()), "shortcuts_movable": self.shortcuts.isChecked(),
             "duplicate_suffix_allowed": self.suffix.isChecked(), "max_files_per_scan": self.max_files.value(),
             "exclude_patterns": [line.strip() for line in self.exclusions.toPlainText().splitlines() if line.strip()],

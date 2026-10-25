@@ -1,7 +1,7 @@
 """Metadata collected without changing the scanned files."""
 from dataclasses import dataclass, field
 
-
+# For the inventory.py, do we want to hold it in memory? How much memory does it utlize assuming worst case scenario? Could be a bottleneck.
 @dataclass
 class FileEntry:
     rel_path: str
@@ -12,8 +12,6 @@ class FileEntry:
     modified_ts: float = 0
     file_type_bucket: str = "Misc"
     is_conservative: bool = False
-    content_role: str = ""
-    content_keywords: list[str] = field(default_factory=list)
     is_empty: bool = False
     parent_folder: str = ""
     depth: int = 0
@@ -27,8 +25,6 @@ class FileEntry:
             "bucket": self.file_type_bucket,
             "parent": self.parent_folder,
             "depth": self.depth,
-            "content_role": self.content_role,
-            "keywords": self.content_keywords,
             "empty": self.is_empty,
             "conservative": self.is_conservative,
         }
@@ -39,6 +35,8 @@ class ScanInventory:
     root: str
     entries: list[FileEntry] = field(default_factory=list)
     directories: list[str] = field(default_factory=list)
+    protected_projects: list[str] = field(default_factory=list)
+    content_read_bytes: int = 1200
     skipped_count: int = 0
     error_count: int = 0
     scan_duration_s: float = 0

@@ -27,5 +27,5 @@ CONSERVATIVE_EXTENSIONS = set(
     ".lnk .url .exe .msi .bat .cmd .ps1 .vbs .dll .sys .drv .ocx .scr".split()
 )
 READABLE_EXTENSIONS = set(
-    ".txt .md .json .yaml .yml .csv .ini .log .cfg .toml .xml .py .js .ts .html .htm .css .java .c .cpp .h .cs .go .rs .rb .php .sh .r".split()
+    ".txt .md .json .yaml .yml .csv .ini .log .cfg .toml .xml .py .js .ts .html .htm .css .java .c .cpp .h .cs .go .rs .rb .php .sh .r .sql".split()
 )

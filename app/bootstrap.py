@@ -17,11 +17,6 @@ class AppContext:
         self.runtime = AIRuntime(self.binary_manager, self.model_manager)
         self.journal = Journal(config.db_path)
 
-    @property
-    def mode(self):
-        chosen = self.config.get("mode")
-        return chosen if chosen in {"fast", "accurate"} else self.hardware.recommended_mode
-
     def shutdown(self):
         self.runtime.shutdown()
         self.journal.close()
