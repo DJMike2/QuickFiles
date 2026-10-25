@@ -34,5 +34,5 @@ CONSERVATIVE_EXTENSIONS = (
     SHORTCUT_EXTENSIONS | EXECUTABLE_EXTENSIONS | LIBRARY_EXTENSIONS | LIVE_DATA_EXTENSIONS
 )
 READABLE_EXTENSIONS = set(
-    ".txt .md .json .yaml .yml .csv .ini .log .cfg .toml .xml .py .js .ts .html .htm .css .java .c .cpp .h .cs .go .rs .rb .php .sh .r".split()
+    ".txt .md .json .yaml .yml .csv .ini .log .cfg .toml .xml .py .js .ts .html .htm .css .java .c .cpp .h .cs .go .rs .rb .php .sh .r .sql".split()
 )

@@ -22,10 +22,10 @@ class ContextTooLargeError(LLMServerError):
 
 
 class LLMServer:
-    def __init__(self, binary_manager, model_path, profile):
+    def __init__(self, binary_manager, model_path, settings):
         self.binary_manager = binary_manager
         self.model_path = model_path
-        self.profile = profile
+        self.settings = settings
         self._process = None
         self._output = None
         self.port = 0
@@ -45,9 +45,9 @@ class LLMServer:
             raise LLMServerError("AI engine or model is missing")
         attempts = []
         if manager.gpu_binary_path:
-            attempts.append((manager.gpu_binary_path, self.profile["n_gpu_layers"], manager.hardware.backend))
+            attempts.append((manager.gpu_binary_path, self.settings["n_gpu_layers"], manager.hardware.backend))
         metal = manager.hardware.backend == "metal"
-        attempts.append((manager.cpu_binary_path, self.profile["n_gpu_layers"] if metal else 0,
+        attempts.append((manager.cpu_binary_path, self.settings["n_gpu_layers"] if metal else 0,
                          "metal" if metal else "cpu"))
         errors = []
         for binary, layers, backend in attempts:
@@ -60,16 +60,18 @@ class LLMServer:
                     self.port = sock.getsockname()[1]
                 environment = dict(os.environ)
                 environment["PATH"] = str(binary.parent) + os.pathsep + environment.get("PATH", "")
+                if sys.platform.startswith("linux"):
+                    environment["LD_LIBRARY_PATH"] = str(binary.parent) + os.pathsep + environment.get("LD_LIBRARY_PATH", "")
                 self._output = tempfile.TemporaryFile()
                 self._process = subprocess.Popen(
                     [str(binary), "--model", str(self.model_path), "--host", "127.0.0.1",
-                     "--port", str(self.port), "--ctx-size", str(self.profile["context_tokens"]),
-                     "--n-gpu-layers", str(layers), "--threads", str(self.profile["threads"])],
+                     "--port", str(self.port), "--ctx-size", str(self.settings["context_tokens"]),
+                     "--n-gpu-layers", str(layers), "--threads", str(self.settings["threads"])],
                     stdout=self._output, stderr=subprocess.STDOUT, cwd=binary.parent, env=environment,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                 )
                 atexit.register(self.stop)
-                deadline = time.monotonic() + 60
+                deadline = time.monotonic() + 180
                 while time.monotonic() < deadline:
                     if cancelled():
                         raise InterruptedError("Model loading stopped")
@@ -96,7 +98,7 @@ class LLMServer:
                 status_cb("Trying the CPU engine…")
         raise LLMServerError("; ".join(errors))
 
-    def chat(self, system, user, max_tokens, temperature):
+    def chat(self, system, user, max_tokens, temperature, *, schema=None, grammar=None):
         if not self.is_running:
             raise LLMServerError("The local AI engine is not running")
         payload = {
@@ -104,14 +106,29 @@ class LLMServer:
                 {"role": "system", "content": system}, {"role": "user", "content": user},
             ],
             "max_tokens": max_tokens, "temperature": temperature, "stream": False,
+            "top_p": self.settings["top_p"], "top_k": self.settings["top_k"],
+            "min_p": self.settings["min_p"], "seed": self.settings["seed"],
+            "cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False},
         }
+        if schema is not None:
+            payload["json_schema"] = schema
+        if grammar is not None:
+            payload["grammar"] = grammar
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/v1/chat/completions",
             data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=300) as response:
-                return json.load(response)["choices"][0]["message"]["content"]
+            with urllib.request.urlopen(request, timeout=600) as response:
+                choice = json.load(response)["choices"][0]
+            if choice.get("finish_reason") != "stop":
+                raise LLMServerError("The model did not finish its response. No partial plan will be used.")
+            if choice["message"].get("reasoning_content"):
+                raise LLMServerError("The model returned thinking output despite thinking being disabled")
+            content = choice["message"]["content"]
+            if not isinstance(content, str) or not content.strip():
+                raise LLMServerError("The model returned an empty response")
+            return content
         except urllib.error.HTTPError as exc:
             detail = exc.read(4096).decode(errors="replace")
             if exc.code == 400 and any(word in detail.lower() for word in ("context", "exceed")):

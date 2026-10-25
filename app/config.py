@@ -12,7 +12,6 @@ from app.constants import APP_DATA_DIR_NAME, DEFAULT_CONTENT_READ_BYTES, DEFAULT
 
 DEFAULTS = {
     "theme": "light",
-    "mode": "auto",
     "allowed_root": str(Path.home() / "Desktop"),
     "exclude_patterns": ["*.tmp", "~$*", "Thumbs.db", ".DS_Store"],
     "max_files_per_scan": DEFAULT_MAX_FILES,
