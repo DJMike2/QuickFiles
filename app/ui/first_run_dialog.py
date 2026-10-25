@@ -19,6 +19,8 @@ class FirstRunDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 20)
         hardware = context.hardware
         model = context.model_manager.model_info
+        vision = context.model_manager.vision_model_info
+        total_gb = (model["size_bytes"] + vision["size_bytes"] + vision["mmproj"]["size_bytes"]) / 1e9
         title = QLabel("Set up local AI")
         font = title.font()
         font.setPointSize(17)
@@ -28,8 +30,8 @@ class FirstRunDialog(QDialog):
         info = QLabel(
             f"{hardware.cpu_name} · {hardware.cpu_cores} CPU cores · {hardware.ram_gb:.1f} GB RAM\n"
             f"GPU: {hardware.gpu_name or 'none detected'} ({hardware.backend.upper()})\n\n"
-            f"Install llama.cpp and {model['label']} (about {model['size_mb'] / 1000:.1f} GB).\n"
-            "After installation, file planning runs on this device.\n"
+            f"Install llama.cpp, {model['label']} and the {vision['label']} vision model "
+            f"(about {total_gb:.1f} GB).\n"
             "The local AI engine and model are required to organize files."
         )
         info.setTextFormat(Qt.PlainText)
@@ -43,9 +45,6 @@ class FirstRunDialog(QDialog):
         self.progress.setValue(0)
         layout.addWidget(self.progress)
         buttons = QHBoxLayout()
-        self.close_button = QPushButton("Close")
-        self.close_button.clicked.connect(self.reject)
-        buttons.addWidget(self.close_button)
         buttons.addStretch()
         self.cancel = QPushButton("Cancel")
         self.cancel.clicked.connect(self._cancel)
@@ -56,30 +55,37 @@ class FirstRunDialog(QDialog):
         self.install.clicked.connect(self._install)
         buttons.addWidget(self.install)
         layout.addLayout(buttons)
-        if context.runtime.available:
-            self.status.setText("The local AI engine and model are installed.")
-            self.install.setText("Use local AI")
+        if self._installed():
+            self.status.setText("The local AI engine and models are installed.")
+            self.install.setText("Close")
         elif hardware.os_warning:
             self.status.setText(hardware.os_warning)
             self.install.setEnabled(False)
 
+    def _installed(self):
+        return self.ctx.runtime.available and self.ctx.model_manager.vision_downloaded
+
     def _install(self):
-        if self.ctx.runtime.available:
+        if self._installed():
             self.accept()
             return
         self.install.setEnabled(False)
-        self.close_button.setEnabled(False)
         self.cancel.show()
         self.cancel.setEnabled(True)
         self.ctx.runtime.shutdown()
 
         def operation(status, progress, cancelled):
-            status("Step 1/2: Installing the AI engine…")
-            self.ctx.binary_manager.download(progress, cancelled, status)
+            if not self.ctx.binary_manager.is_available:
+                status("Step 1/3: Installing the AI engine…")
+                self.ctx.binary_manager.download(progress, cancelled, status)
             if cancelled():
                 raise InterruptedError("Installation cancelled")
-            status("Step 2/2: Installing the AI model…")
+            status("Step 2/3: Installing the AI model…")
             self.ctx.model_manager.download(progress, cancelled)
+            if cancelled():
+                raise InterruptedError("Installation cancelled")
+            status("Step 3/3: Installing the vision model…")
+            self.ctx.model_manager.download_vision(progress, cancelled)
 
         self.worker = Worker(operation, self)
         self.worker.status.connect(self.status.setText)
@@ -99,7 +105,6 @@ class FirstRunDialog(QDialog):
         self.worker = None
         self.cancel.hide()
         self.install.setEnabled(True)
-        self.close_button.setEnabled(True)
         if worker.error:
             self.status.setText(f"Installation failed: {worker.error}")
             self.install.setText("Retry")
@@ -109,7 +114,7 @@ class FirstRunDialog(QDialog):
             self.status.setText("Installation complete. Local AI is ready.")
             self.progress.setRange(0, 1000)
             self.progress.setValue(1000)
-            self.install.setText("Use local AI")
+            self.install.setText("Close")
         worker.deleteLater()
         if self._close_pending:
             self.reject()

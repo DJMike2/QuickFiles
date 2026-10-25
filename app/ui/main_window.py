@@ -30,6 +30,7 @@ from app.ui.preview_panel import PreviewPanel
 from app.ui.search_panel import SearchPanel
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.theme import apply_theme
+from app.ui.title_bar import EdgeResizer, TitleBar
 from app.ui.worker import Worker
 
 
@@ -50,6 +51,13 @@ class MainWindow(QMainWindow):
         self._pending_sizes = {}
         self._index = ScanIndex()
         self.setWindowTitle(APP_NAME)
+        self.setObjectName("mainWindow")
+        # The minimize/maximize hints keep taskbar minimize and Win+arrow snapping on a frameless window.
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowSystemMenuHint
+                            | Qt.WindowMinMaxButtonsHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.title_bar = TitleBar(self)
+        self.setMenuWidget(self.title_bar)
         self.resize(1200, 750)
         self.setMinimumSize(1060, 680)
         central = QWidget()
@@ -168,6 +176,8 @@ class MainWindow(QMainWindow):
         tray_menu.addAction("Quit", self._quit_from_tray)
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._tray_activated)
+        self.winId()
+        self._resizer = EdgeResizer(self)
         self._theme()
         self._buttons()
         if self._watching():
@@ -176,6 +186,7 @@ class MainWindow(QMainWindow):
     def _theme(self):
         apply_theme(self.config.get("theme"))
         self.preview.set_dark(self.config.get("theme") == "dark")
+        self.search_panel.set_dark(self.config.get("theme") == "dark")
 
     def _show_view(self, index):
         self.view_buttons.button(index).setChecked(True)
