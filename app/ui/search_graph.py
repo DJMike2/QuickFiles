@@ -95,7 +95,9 @@ class _Node(QGraphicsObject):
         self.setZValue(2)
 
     def boundingRect(self) -> QRectF:
-        if self.kind in {"search", "history_center"}:
+        if self.kind == "history_center":
+            return QRectF(-142, -142, 284, 284)
+        if self.kind == "search":
             return QRectF(-110, -110, 220, 220)
         if self.kind == "history":
             return QRectF(-80, -80, 160, 160)
@@ -150,7 +152,7 @@ class _Node(QGraphicsObject):
         metrics = QFontMetrics(font)
         width = int(rect.width() - (48 if is_center else 36))
         title = metrics.elidedText(self.title, Qt.TextElideMode.ElideMiddle, width)
-        title_y = -17 if is_center else -4
+        title_y = -17 if is_center else (-10 if self.kind == "history" else -4)
         painter.drawText(QRectF(-width / 2, title_y, width, 23),
                          Qt.AlignmentFlag.AlignCenter, title)
 
@@ -160,7 +162,8 @@ class _Node(QGraphicsObject):
         painter.setPen(QColor("#dbeafe" if is_center else "#a9bfd8"))
         detail_metrics = QFontMetrics(font)
         detail = detail_metrics.elidedText(self.detail, Qt.TextElideMode.ElideRight, width)
-        painter.drawText(QRectF(-width / 2, title_y + 25, width, 20),
+        detail_y = title_y + (19 if self.kind == "history" else 25)
+        painter.drawText(QRectF(-width / 2, detail_y, width, 20),
                          Qt.AlignmentFlag.AlignCenter, detail)
 
     def _paint_document_icon(self, painter: QPainter) -> None:
@@ -253,12 +256,25 @@ class _GraphCanvas(QGraphicsView):
             self.zoom(1.15 if delta > 0 else 1 / 1.15)
         event.accept()
 
+    def _zoom_limits(self) -> tuple[float, float]:
+        """Closest zoom keeps every node on screen; farthest is 60% of the Fit view."""
+        view = self.viewport().rect()
+        nodes = self.scene().itemsBoundingRect().adjusted(-12, -12, 12, 12)
+        frame = self.sceneRect()
+        if nodes.isEmpty() or frame.isEmpty() or view.isEmpty():
+            return 0.1, 4.0
+        closest = min(view.width() / nodes.width(), view.height() / nodes.height())
+        fit = min(view.width() / frame.width(), view.height() / frame.height())
+        return min(fit, closest) * 0.6, closest
+
     def zoom(self, factor: float) -> None:
-        """Zoom around the cursor; clamp limits so the graph can't disappear."""
-        next_zoom = self.transform().m11() * factor
-        if 0.1 <= next_zoom <= 4.0:
+        """Zoom around the cursor, never past the point where nodes leave the view."""
+        current = self.transform().m11()
+        farthest, closest = self._zoom_limits()
+        target = max(farthest, min(closest, current * factor))
+        if abs(target - current) > 1e-4:
             self._auto_fit = False
-            self.scale(factor, factor)
+            self.scale(target / current, target / current)
 
     def fit_graph(self) -> None:
         """Reset zoom and pan to show every node with breathing room."""
@@ -271,6 +287,8 @@ class _GraphCanvas(QGraphicsView):
         super().resizeEvent(event)
         if self._auto_fit and not self.sceneRect().isEmpty():
             self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        elif not self._auto_fit:
+            self.zoom(1.0)
 
     def mousePressEvent(self, event) -> None:
         # A background drag is a deliberate pan. Preserve it on future resizes
@@ -303,6 +321,7 @@ class SearchGraphWidget(QWidget):
         self._showing_history = False
         self._transitioning = False
         self._active_animation: QVariantAnimation | None = None
+        self._results_frame: QRectF | None = None
         self._scene = QGraphicsScene(self)
         self._canvas = _GraphCanvas(self._scene, self)
         layout = QVBoxLayout(self)
@@ -310,12 +329,12 @@ class SearchGraphWidget(QWidget):
         layout.setSpacing(0)
 
         # Visible controls complement wheel zoom and background-drag panning.
-        toolbar = QWidget(self)
-        toolbar.setStyleSheet("background:#0b1220;")
-        tools_row = QHBoxLayout(toolbar)
+        self._toolbar = QWidget(self)
+        self._toolbar.setObjectName("graphToolbar")
+        tools_row = QHBoxLayout(self._toolbar)
         tools_row.setContentsMargins(12, 7, 12, 7)
         hint = QLabel("Scroll to zoom · Drag empty space to pan")
-        hint.setStyleSheet("color:#9bb2d1; font-size:11px;")
+        hint.setObjectName("graphHint")
         tools_row.addWidget(hint)
         tools_row.addStretch()
         for label, tooltip, action in (
@@ -327,16 +346,27 @@ class SearchGraphWidget(QWidget):
             button.setToolTip(tooltip)
             button.setFixedHeight(28)
             button.setMinimumWidth(34 if label != "Fit" else 45)
-            button.setStyleSheet(
-                "QPushButton{color:#dce9fa;background:#23364e;border:1px solid #40597c;"
-                "border-radius:6px;padding:2px 7px;}"
-                "QPushButton:hover{background:#345478;}"
-            )
             button.clicked.connect(action)
             tools_row.addWidget(button)
-        layout.addWidget(toolbar)
+        layout.addWidget(self._toolbar)
         layout.addWidget(self._canvas)
+        self.set_dark(True)
         self._draw({"query": "Your search", "results": []})
+
+    def set_dark(self, dark: bool) -> None:
+        """Only the canvas and its controls follow the theme; nodes keep their colors."""
+        background, hint, text, fill, border, hover = (
+            ("#0b1220", "#9bb2d1", "#dce9fa", "#23364e", "#40597c", "#345478") if dark else
+            ("#dde2e9", "#5a6372", "#1a1a1a", "#ffffff", "#c4cad3", "#e4e8ee")
+        )
+        self._canvas.setBackgroundBrush(QColor(background))
+        self._toolbar.setStyleSheet(
+            f"QWidget#graphToolbar {{ background:{background}; }}"
+            f"QLabel#graphHint {{ color:{hint}; font-size:11px; background:transparent; }}"
+            f"QPushButton {{ color:{text}; background:{fill}; border:1px solid {border};"
+            f" border-radius:6px; padding:2px 7px; }}"
+            f"QPushButton:hover {{ background:{hover}; }}"
+        )
 
     def _cancel_transition(self) -> None:
         """New backend results supersede any unfinished cosmetic animation."""
@@ -509,7 +539,7 @@ class SearchGraphWidget(QWidget):
             radius = 350
             node.setPos(radius * math.cos(angle), radius * math.sin(angle))
             self._scene.addItem(_Connection(center, node))
-        self._fit_scene()
+        self._fit_scene(keep_results_frame=True)
 
     def return_to_results(self) -> None:
         """Click the center History node to return to the selected query."""
@@ -578,7 +608,7 @@ class SearchGraphWidget(QWidget):
 
         # The dedicated History node is above the query; it replaces this
         # entire graph when clicked (rather than opening a popup menu).
-        history = _Node("◷  History", "Browse previous searches", "history",
+        history = _Node("◷  History", "Browse previous search", "history",
                         self.show_history_graph, "#fbbf24")
         self._scene.addItem(history)
         history.setPos(0, -315)
@@ -601,8 +631,7 @@ class SearchGraphWidget(QWidget):
                          lambda p=path: self._open_result(p),
                          self._type_color(file_type),
                          # Keep the most recently hovered file visible in the
-                         # right panel, so its Open button remains clickable
-                         # after the cursor leaves the result circle.
+                         # right panel after the cursor leaves the circle.
                          lambda hovering, record=item: (
                              self.file_hovered.emit(record) if hovering else None
                          ))
@@ -617,6 +646,15 @@ class SearchGraphWidget(QWidget):
 
         self._fit_scene()
 
-    def _fit_scene(self) -> None:
-        self._scene.setSceneRect(self._scene.itemsBoundingRect().adjusted(-80, -70, 80, 70))
+    def _fit_scene(self, *, keep_results_frame: bool = False) -> None:
+        frame = self._scene.itemsBoundingRect().adjusted(-80, -70, 80, 70)
+        # History reuses the results framing, so its circles appear at the same scale.
+        if keep_results_frame and self._results_frame is not None:
+            frame = frame.united(self._results_frame)
+            half_width = max(-frame.left(), frame.right())
+            half_height = max(-frame.top(), frame.bottom())
+            frame = QRectF(-half_width, -half_height, 2 * half_width, 2 * half_height)
+        else:
+            self._results_frame = frame
+        self._scene.setSceneRect(frame)
         self._canvas.fit_graph()

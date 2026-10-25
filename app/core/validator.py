@@ -13,7 +13,7 @@ from app.constants import (
     EXECUTABLE_EXTENSIONS, LIBRARY_EXTENSIONS, LIVE_DATA_EXTENSIONS, SHORTCUT_EXTENSIONS,
 )
 from app.core.blocked_paths import checked_path, enforce_project_boundary, resolve_safe, validate_root_selection
-from app.core.naming import make_unique_dest, relative_parts
+from app.core.naming import relative_parts
 from app.core.file_state import identity
 
 
@@ -28,8 +28,8 @@ _PROJECT_MARKERS = (".git", "package.json", "pyproject.toml", "Cargo.toml", "go.
 
 
 class Validator:
-    def __init__(self, root: Path, *, allow_suffix_on_collision=True, shortcuts_movable=False,
-                 executables_movable=False):
+    def __init__(self, root: Path, *, shortcuts_movable=False, executables_movable=False,
+                 allow_suffix_on_collision=False):
         self.root = resolve_safe(root)
         self.allow_suffix_on_collision = allow_suffix_on_collision
         self.shortcuts_movable = shortcuts_movable
@@ -106,10 +106,18 @@ class Validator:
                     if action.type == "move" and PurePosixPath(action.src_rel).parent == PurePosixPath(action.dst_rel).parent:
                         raise ValueError("A move must change the containing folder")
                 if occupied(action.dst_rel):
-                    if action.type == "mkdir" or not self.allow_suffix_on_collision:
+                    if action.type == 'mkdir' or not self.allow_suffix_on_collision:
                         raise ValueError(f"Destination already exists: {action.dst_rel}")
-                    action.dst_rel = make_unique_dest(action.dst_rel, occupied)
-                    destination = checked_path(self.root, action.dst_rel)
+                    # Explicit legacy/tooling opt-in; the app rejects collisions by default.
+                    original_path = PurePosixPath(action.dst_rel)
+                    for number in range(1, 100_000):
+                        candidate = str(original_path.with_name(f"{original_path.stem} ({number}){original_path.suffix}"))
+                        if not occupied(candidate):
+                            action.dst_rel = candidate
+                            destination = checked_path(self.root, candidate)
+                            break
+                    else:
+                        raise ValueError('Too many destination collisions')
                 for parent in destination.parents:
                     if parent == self.root:
                         break

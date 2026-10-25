@@ -32,6 +32,19 @@
     "size_bytes": 8451485728,
     "sha256": "23a91e941634ce922058558cd6c055ed8440ba710daee57613b12a2da7356111"
   },
+  "vision_model": {
+    "label": "Qwen3-VL-4B-Instruct Q4_K_S",
+    "filename": "Qwen3-VL-4B-Instruct-Q4_K_S.gguf",
+    "url": "https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF/resolve/00c00da0690c4b14b5539b02c4ea5d7c9102b35e/Qwen3-VL-4B-Instruct-Q4_K_S.gguf",
+    "size_bytes": 2383311136,
+    "sha256": "a17d6971beb52ce90968118e2c909957d43e83e3befd8d0894f4ae597c15b743",
+    "mmproj": {
+      "filename": "Qwen3-VL-4B-Instruct-mmproj-F16.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF/resolve/00c00da0690c4b14b5539b02c4ea5d7c9102b35e/mmproj-F16.gguf",
+      "size_bytes": 836180640,
+      "sha256": "1b9f4e92f0fbda14d7d7b58baed86039b8a980fe503d9d6a9393f25c0028f1fc"
+    }
+  },
   "embedding_model": {
     "label": "All-MiniLM-L6-v2 F16",
     "filename": "all-MiniLM-L6-v2-ggml-model-f16.gguf",

@@ -3,6 +3,7 @@ import fnmatch
 from io import BytesIO
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -154,6 +155,23 @@ class NativeScannerTests(unittest.TestCase):
         self.assertEqual(len(launched), 1)
         self.assertIsNotNone(launched[0].poll())
         self.assertTrue(launched[0].stdout.closed)
+
+    def test_locked_scratch_file_does_not_mask_cancellation(self):
+        self.write("keep.txt")
+        real_rmtree = shutil.rmtree
+        attempts = []
+
+        def locked_once(path, *args, **kwargs):
+            attempts.append(Path(path))
+            if len(attempts) == 1:
+                raise PermissionError(32, "The process cannot access the file", str(path))
+            return real_rmtree(path, *args, **kwargs)
+
+        with patch("app.core.scanner.shutil.rmtree", side_effect=locked_once):
+            with self.assertRaises(InterruptedError):
+                Scanner(self.root, cancelled=iter([False, False] + [True] * 10_000).__next__).scan()
+        self.assertGreaterEqual(len(attempts), 2)
+        self.assertFalse(attempts[0].exists())
 
     def test_cancel_before_scan_and_missing_binary(self):
         with patch("app.core.scanner.subprocess.Popen") as launch:

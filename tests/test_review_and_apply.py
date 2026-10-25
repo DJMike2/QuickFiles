@@ -181,6 +181,14 @@ class WholeReviewTests(DirectoryCase):
 
 
 class ApplyVerificationTests(DirectoryCase):
+    def test_collision_defaults_reject_and_legacy_suffix_requires_explicit_opt_in(self):
+        self.write('a.txt','Original');self.write('Subject/a.txt','Occupied')
+        plan=OrganizationPlan(str(self.root),[self.action('a.txt','Subject/a.txt')])
+        self.assertEqual(len(Validator(self.root).validate_plan(plan).rejected_actions),1)
+        report=Validator(self.root,allow_suffix_on_collision=True).validate_plan(plan)
+        self.assertEqual(report.valid_actions[0].dst_rel,'Subject/a (1).txt')
+        self.assertEqual((self.root/'Subject/a.txt').read_text(),'Occupied')
+
     def test_complete_apply_and_undo_verify_contents_and_persist_hashes(self):
         self.write('a.txt', 'Original A');self.write('b.txt', 'Original B')
         actions = [self.action(n, 'Subject/'+n) for n in ('a.txt','b.txt')]
@@ -337,6 +345,26 @@ class ApprovalAndPreviewTests(DirectoryCase):
         os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
         from PySide6.QtWidgets import QApplication
         cls.app=QApplication.instance() or QApplication([])
+
+    def test_arrival_watcher_rejects_a_source_changed_during_assignment(self):
+        from app.config import AppConfig
+        from app.ui.main_window import MainWindow
+        source=self.write('new.txt','Original subject');(self.root/'Notes').mkdir()
+        def assign(*args,**kwargs):
+            source.write_text('Changed during model inference')
+            return {'new.txt':'Notes'}
+        runtime=SimpleNamespace(available=True,backend_label='Test AI',assign_files=assign,shutdown=lambda:None)
+        window=MainWindow(SimpleNamespace(config=AppConfig(self.base/'config'),runtime=runtime,journal=self.journal))
+        self.addCleanup(window.deleteLater)
+        window._index.folders={'Notes':'Existing notes'}
+        with patch.object(window,'_start') as start:
+            window._ask_model(self.root,[source])
+        kind,operation=start.call_args.args
+        self.assertEqual(kind,'watch')
+        moved=operation(lambda *a:None,lambda *a:None,lambda:False)
+        self.assertEqual(moved,[])
+        self.assertTrue(source.exists())
+        self.assertFalse((self.root/'Notes/new.txt').exists())
 
     def test_cancelled_confirmation_does_nothing_and_approved_map_uses_verified_executor(self):
         from app.config import AppConfig
