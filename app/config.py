@@ -21,6 +21,7 @@ DEFAULTS = {
     "shortcuts_movable": False,
     "executables_movable": False,
     "duplicate_suffix_allowed": True,
+    "watch_new_files": False,
     "window_geometry": None,
 }
 
