@@ -13,7 +13,7 @@ from app.constants import (
     EXECUTABLE_EXTENSIONS, LIBRARY_EXTENSIONS, LIVE_DATA_EXTENSIONS, SHORTCUT_EXTENSIONS,
 )
 from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
-from app.core.naming import make_unique_dest, relative_parts
+from app.core.naming import relative_parts
 
 
 @dataclass
@@ -27,10 +27,8 @@ _PROJECT_MARKERS = (".git", "package.json", "pyproject.toml", "Cargo.toml", "go.
 
 
 class Validator:
-    def __init__(self, root: Path, *, allow_suffix_on_collision=True, shortcuts_movable=False,
-                 executables_movable=False):
+    def __init__(self, root: Path, *, shortcuts_movable=False, executables_movable=False):
         self.root = resolve_safe(root)
-        self.allow_suffix_on_collision = allow_suffix_on_collision
         self.shortcuts_movable = shortcuts_movable
         self.executables_movable = executables_movable
 
@@ -97,10 +95,7 @@ class Validator:
                     if action.type == "move" and PurePosixPath(action.src_rel).parent == PurePosixPath(action.dst_rel).parent:
                         raise ValueError("A move must change the containing folder")
                 if occupied(action.dst_rel):
-                    if action.type == "mkdir" or not self.allow_suffix_on_collision:
-                        raise ValueError(f"Destination already exists: {action.dst_rel}")
-                    action.dst_rel = make_unique_dest(action.dst_rel, occupied)
-                    destination = checked_path(self.root, action.dst_rel)
+                    raise ValueError(f"Destination already exists: {action.dst_rel}")
                 for parent in destination.parents:
                     if parent == self.root:
                         break
