@@ -41,9 +41,12 @@ class SettingsDialog(QDialog):
         row.addWidget(self.root)
         row.addWidget(browse)
         form.addRow("Selected folder", root_row)
-        self.shortcuts = QCheckBox("Allow moving executables and shortcuts")
+        self.shortcuts = QCheckBox("Allow moving shortcuts")
         self.shortcuts.setChecked(config.get("shortcuts_movable"))
         form.addRow(self.shortcuts)
+        self.executables = QCheckBox("Allow moving executables")
+        self.executables.setChecked(config.get("executables_movable"))
+        form.addRow(self.executables)
         self.suffix = QCheckBox("Add a numbered suffix when destinations collide")
         self.suffix.setChecked(config.get("duplicate_suffix_allowed"))
         form.addRow(self.suffix)
@@ -132,6 +135,7 @@ class SettingsDialog(QDialog):
         self.ctx.config.update({
             "theme": self.theme.currentText(), "mode": self.mode.currentText(),
             "allowed_root": str(root.resolve()), "shortcuts_movable": self.shortcuts.isChecked(),
+            "executables_movable": self.executables.isChecked(),
             "duplicate_suffix_allowed": self.suffix.isChecked(), "max_files_per_scan": self.max_files.value(),
             "exclude_patterns": [line.strip() for line in self.exclusions.toPlainText().splitlines() if line.strip()],
         })

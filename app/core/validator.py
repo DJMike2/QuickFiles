@@ -9,7 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from app.ai.schema import PlanWarning
-from app.constants import CONSERVATIVE_EXTENSIONS
+from app.constants import (
+    EXECUTABLE_EXTENSIONS, LIBRARY_EXTENSIONS, LIVE_DATA_EXTENSIONS, SHORTCUT_EXTENSIONS,
+)
 from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
 from app.core.naming import make_unique_dest, relative_parts
 
@@ -21,11 +23,36 @@ class ValidationReport:
     warnings: list = field(default_factory=list)
 
 
+_PROJECT_MARKERS = (".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod")
+
+
 class Validator:
-    def __init__(self, root: Path, *, allow_suffix_on_collision=True, shortcuts_movable=False):
+    def __init__(self, root: Path, *, allow_suffix_on_collision=True, shortcuts_movable=False,
+                 executables_movable=False):
         self.root = resolve_safe(root)
         self.allow_suffix_on_collision = allow_suffix_on_collision
         self.shortcuts_movable = shortcuts_movable
+        self.executables_movable = executables_movable
+
+    def _reject_immovable(self, source: Path):
+        suffix = source.suffix.lower()
+        if suffix in LIBRARY_EXTENSIONS:
+            raise ValueError("Moving libraries and drivers is disabled")
+        if suffix in LIVE_DATA_EXTENSIONS:
+            raise ValueError("Moving live databases and disk images is disabled")
+        if suffix in SHORTCUT_EXTENSIONS and not self.shortcuts_movable:
+            raise ValueError("Moving shortcuts is disabled")
+        if suffix in EXECUTABLE_EXTENSIONS and not self.executables_movable:
+            raise ValueError("Moving executables is disabled")
+
+    def _project_warning(self):
+        try:
+            found = next((name for name in _PROJECT_MARKERS if (self.root / name).exists()), "")
+        except OSError:
+            return ""
+        if not found:
+            return ""
+        return f"This folder looks like a project ({found}). Review moves so the source layout stays intact."
 
     def validate_plan(self, plan):
         valid, reason = validate_root_selection(self.root)
@@ -34,6 +61,9 @@ class Validator:
         if resolve_safe(Path(plan.root)) != self.root:
             raise ValueError("The plan belongs to a different folder")
         report = ValidationReport(warnings=list(plan.warnings))
+        project_warning = self._project_warning()
+        if project_warning and all(item.message != project_warning for item in report.warnings):
+            report.warnings.insert(0, PlanWarning("", project_warning))
         sources = set()
         destinations = {}
 
@@ -62,8 +92,7 @@ class Validator:
                         raise ValueError(f"Source is not an existing file: {action.src_rel}")
                     if key(action.src_rel) in sources:
                         raise ValueError("More than one operation uses this source")
-                    if source.suffix.lower() in CONSERVATIVE_EXTENSIONS and not self.shortcuts_movable:
-                        raise ValueError("Moving executables and shortcuts is disabled")
+                    self._reject_immovable(source)
                     if key(action.src_rel) == key(action.dst_rel):
                         raise ValueError("Source and destination are identical")
                     if action.type == "move" and PurePosixPath(action.src_rel).parent == PurePosixPath(action.dst_rel).parent:
@@ -84,7 +113,8 @@ class Validator:
                 prefix = key(action.dst_rel) + "/"
                 if action.type != "mkdir" and any(value.startswith(prefix) for value in destinations):
                     raise ValueError("Destination conflicts with a planned folder")
-                if sys.platform == "win32" and len(str(destination)) >= 260:
+                # MAX_PATH includes the terminating null, so 259 characters can still fail.
+                if sys.platform == "win32" and len(str(destination)) >= 259:
                     raise ValueError("Destination exceeds the Windows path limit")
                 report.valid_actions.append(action)
                 destinations[key(action.dst_rel)] = action.type

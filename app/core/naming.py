@@ -2,7 +2,7 @@
 import re
 from pathlib import PurePosixPath
 
-_RESERVED = {"CON", "PRN", "AUX", "NUL"} | {
+_RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
     f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
 }
 _FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

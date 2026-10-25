@@ -23,12 +23,12 @@ class Simulator:
     def __init__(self, root: Path):
         self.root = root
 
-    def build_trees(self, inventory, plan):
+    def build_trees(self, inventory, plan, order=None, displaced=None):
         before = self._tree(inventory, None)
-        after = self._tree(inventory, plan)
+        after = self._tree(inventory, plan, order, displaced)
         return before, after
 
-    def _tree(self, inventory, plan):
+    def _tree(self, inventory, plan, order=None, displaced=None):
         root = TreeNode(self.root.name, True, "")
         nodes = {"": root}
 
@@ -50,7 +50,10 @@ class Simulator:
             return node
 
         # Existing folders remain even when their files are moved away.
+        displaced = displaced or set()
         for directory in inventory.directories:
+            if directory in displaced:
+                continue
             insert(directory, is_dir=True)
         moves = {a.src_rel: a for a in plan.actions if a.type in {"move", "rename"}} if plan else {}
         for entry in inventory.entries:
@@ -61,7 +64,11 @@ class Simulator:
                 insert(action.dst_rel, is_dir=action.type == "mkdir", action=action)
 
         def sort(node):
-            node.children.sort(key=lambda child: (not child.is_dir, child.name.casefold()))
+            ranks = {path: index for index, path in enumerate((order or {}).get(node.rel_path, []))}
+            node.children.sort(key=lambda child: (
+                (0, ranks[child.rel_path]) if child.rel_path in ranks else (1, 0 if child.is_dir else 1),
+                child.name.casefold(),
+            ))
             for child in node.children:
                 sort(child)
 
