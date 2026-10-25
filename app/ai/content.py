@@ -27,7 +27,7 @@ def _pdf_text(path):
     return ""
 
 
-def read_content(entry, read_limit=1200):
+def read_content(entry, read_limit=1200, *, max_chars=180):
     if read_limit <= 0:
         return ""
     path = Path(entry.abs_path)
@@ -50,4 +50,4 @@ def read_content(entry, read_limit=1200):
                 text = stream.read(min(read_limit, 1200)).decode("utf-8", "replace")
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError):
         pass
-    return re.sub(r"\s+", " ", text).strip()[:180]
+    return re.sub(r"\s+", " ", text).strip()[:max_chars]

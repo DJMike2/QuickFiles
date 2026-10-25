@@ -26,5 +26,12 @@
     "url": "https://huggingface.co/bartowski/Qwen_Qwen3.5-9B-GGUF/resolve/182be2fd6c7bc44887d88a91cb03ff009cc9f549/Qwen_Qwen3.5-9B-Q6_K_L.gguf",
     "size_bytes": 8451485728,
     "sha256": "23a91e941634ce922058558cd6c055ed8440ba710daee57613b12a2da7356111"
+  },
+  "embedding_model": {
+    "label": "All-MiniLM-L6-v2 F16",
+    "filename": "all-MiniLM-L6-v2-ggml-model-f16.gguf",
+    "url": "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/544f204f2eaa2d71361ffc74d6df7170285b286a/all-MiniLM-L6-v2-ggml-model-f16.gguf",
+    "size_bytes": 45949216,
+    "sha256": "797b70c4edf85907fe0a49eb85811256f65fa0f7bf52166b147fd16be2be4662"
   }
 }

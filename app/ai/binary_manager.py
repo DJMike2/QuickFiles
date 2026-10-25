@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path
 
 from app.ai.model_downloader import download_file
+from app.platforms import require_supported_platform
 
 log = logging.getLogger(__name__)
 ENGINE_RELEASE = "b11869"
@@ -22,6 +23,7 @@ ENGINE_RELEASE = "b11869"
 
 class BinaryManager:
     def __init__(self, app_data_dir, hardware):
+        require_supported_platform()
         self.bin_dir = app_data_dir / "bin"
         self.hardware = hardware
         self.server_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
@@ -51,12 +53,11 @@ class BinaryManager:
         return self.gpu_binary_path is not None
 
     def _platform_patterns(self):
+        require_supported_platform()
         arm = platform.machine().lower() in {"arm64", "aarch64"}
         arch = "arm64" if arm else "x64"
         if sys.platform == "win32":
             return [rf"^llama-{ENGINE_RELEASE}-bin-win-cpu-{arch}\.zip$"]
-        if sys.platform == "darwin":
-            return [rf"^llama-{ENGINE_RELEASE}-bin-macos-{arch}\.tar\.gz$"]
         if sys.platform.startswith("linux"):
             return [rf"^llama-{ENGINE_RELEASE}-bin-ubuntu-{arch}\.tar\.gz$"]
         raise RuntimeError("No automatic AI engine package is available for this operating system")

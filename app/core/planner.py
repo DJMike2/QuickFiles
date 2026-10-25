@@ -6,14 +6,17 @@ from app.ai.content import read_content
 from app.ai.llm_server import LLMServerError
 from app.ai.schema import OrganizationPlan, PlanAction, PlanWarning
 from app.core.naming import relative_parts
+from app.constants import SHORTCUT_EXTENSIONS, EXECUTABLE_EXTENSIONS
 
 
 class Planner:
-    def __init__(self, runtime, progress_cb=None, cancelled=None, *, shortcuts_movable=False):
+    def __init__(self, runtime, progress_cb=None, cancelled=None, *, shortcuts_movable=False,
+                 executables_movable=False):
         self.runtime = runtime
         self.progress_cb = progress_cb or (lambda message: None)
         self.cancelled = cancelled or (lambda: False)
         self.shortcuts_movable = shortcuts_movable
+        self.executables_movable = executables_movable
 
     def _check_cancelled(self):
         if self.cancelled():
@@ -31,7 +34,9 @@ class Planner:
             return any(lower == project or lower.startswith(project + "/") for project in blocked)
 
         entries = [entry for entry in inventory.entries if entry.depth == 0
-                   and (self.shortcuts_movable or not entry.is_conservative)]
+                   and (not entry.is_conservative
+                        or self.shortcuts_movable and entry.extension in SHORTCUT_EXTENSIONS
+                        or self.executables_movable and entry.extension in EXECUTABLE_EXTENSIONS)]
         if not entries:
             plan.excluded_count = inventory.total_files
             return plan

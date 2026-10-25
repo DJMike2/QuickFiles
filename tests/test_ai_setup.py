@@ -15,11 +15,10 @@ from app.ai.model_downloader import download_file
 
 
 class SetupTests(unittest.TestCase):
-    def test_pinned_cpu_packages_install_on_windows_macos_and_linux(self):
+    def test_pinned_cpu_packages_install_on_windows_and_linux(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cases = [('win32', 'x86_64', 'win-cpu-x64.zip'),
-                     ('darwin', 'arm64', 'macos-arm64.tar.gz'),
                      ('linux', 'x86_64', 'ubuntu-x64.tar.gz')]
             for system, machine, suffix in cases:
                 with self.subTest(system=system):

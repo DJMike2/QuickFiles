@@ -9,10 +9,12 @@ import sys
 from pathlib import Path
 
 from app.constants import APP_DATA_DIR_NAME, DEFAULT_CONTENT_READ_BYTES, DEFAULT_MAX_FILES
+from app.platforms import require_supported_platform
 
 DEFAULTS = {
     "theme": "light",
     "allowed_root": str(Path.home() / "Desktop"),
+    "search_root": str(Path.home() / "Desktop"),
     "exclude_patterns": ["*.tmp", "~$*", "Thumbs.db", ".DS_Store"],
     "max_files_per_scan": DEFAULT_MAX_FILES,
     "content_read_bytes": DEFAULT_CONTENT_READ_BYTES,
@@ -24,10 +26,9 @@ DEFAULTS = {
 
 
 def app_data_path() -> Path:
+    require_supported_platform()
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming"))
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library/Application Support"
     else:
         base = Path.home() / ".local/share"
     return base / APP_DATA_DIR_NAME

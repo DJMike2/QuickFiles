@@ -102,6 +102,16 @@ class PlanningTests(unittest.TestCase):
         manager.model_path.write_bytes(b'GGUFpartial')
         self.assertFalse(manager.is_downloaded)
 
+    def test_executable_permission_remains_separate_from_shortcut_permission(self):
+        planner, _ = self.planner(['{"folders":[]}', '1:0\n2:0\n3:1\n4:0\n', '{"folders":[]}'])
+        planner.executables_movable = True
+        plan = planner.plan(self.inventory)
+        self.assertEqual([action.src_rel for action in plan.actions], ['protected.exe'])
+        planner, server = self.planner(['{"folders":[]}', '1:0\n2:0\n3:0\n', '{"folders":[]}'])
+        planner.shortcuts_movable = True
+        planner.plan(self.inventory)
+        self.assertNotIn('protected.exe', [row['name'] for row in server.requests[0][1]['loose_files']])
+
     def test_engine_turns_thinking_off_and_rejects_token_limit_answers(self):
         server = LLMServer(None, self.root/'unused.gguf', SETTINGS)
         server._process = SimpleNamespace(poll=lambda: None)

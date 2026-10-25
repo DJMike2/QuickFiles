@@ -1,7 +1,7 @@
 """Right-side chat controls plus a left-side graph for semantic search JSON.
 
-The UI makes no AI/model calls. A future background search worker can connect
-to `searchRequested`, then call `display_results` on the GUI thread.
+The UI emits searchRequested; a background search worker returns display_results
+with an answer based on actual retrieved files.
 
 Expected backend JSON format (see sample-search-results.json):
     {
@@ -32,7 +32,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QFileDialog, QFrame, QGridLayout, QGroupBox,
+    QFileDialog, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
@@ -44,11 +44,12 @@ class SearchPanel(QWidget):
     """A single-turn chat sidebar, graph, and optional development controls."""
 
     searchRequested = Signal(str)
+    cancelRequested = Signal()
 
     def __init__(self, parent=None, *, show_json_loader: bool = True):
         super().__init__(parent)
-        self._source_actions = {}
-        self._action_proxies = {}
+        self._busy = False
+        self._external_busy = False
         self.show_json_loader = show_json_loader
         self._hovered_file_path = ""
 
@@ -204,7 +205,7 @@ class SearchPanel(QWidget):
         )
         chat_rows.addWidget(self.latest_prompt)
 
-        self.response = QLabel("The search backend is not connected yet.")
+        self.response = QLabel("Choose a folder, then describe the files you want to find.")
         self.response.setTextFormat(Qt.TextFormat.PlainText)
         self.response.setWordWrap(True)
         self.response.setStyleSheet(
@@ -212,12 +213,14 @@ class SearchPanel(QWidget):
         )
         chat_rows.addWidget(self.response)
 
-        # Organizer controls are duplicated in the Search tab temporarily,
-        # and connected to their existing buttons in MainWindow.
-        self.organizer_group = QGroupBox("Organizer controls · temporary")
-        self.organizer_grid = QGridLayout(self.organizer_group)
-        self.organizer_group.hide()
-        chat_rows.addWidget(self.organizer_group)
+        scope = QGroupBox("Search folder")
+        scope_layout = QHBoxLayout(scope)
+        self.folder = QLineEdit()
+        self.folder.setPlaceholderText("Select the folder to search…")
+        scope_layout.addWidget(self.folder, 1)
+        self.browse_button = QPushButton("Browse…")
+        self.browse_button.clicked.connect(self._browse)
+        scope_layout.addWidget(self.browse_button)
         chat_rows.addStretch(1)
         chat_scroll.setWidget(chat_content)
         side.addWidget(chat_scroll, 1)
@@ -228,6 +231,7 @@ class SearchPanel(QWidget):
         footer_layout = QVBoxLayout(footer)
         footer_layout.setContentsMargins(0, 5, 0, 0)
         footer_layout.setSpacing(8)
+        footer_layout.addWidget(scope)
 
         # This is deliberately the only testing control. In the full app,
         # MainWindow passes show_json_loader=False so users never see it.
@@ -252,6 +256,10 @@ class SearchPanel(QWidget):
         )
         self.search_button.clicked.connect(self._request_search)
         input_row.addWidget(self.search_button)
+        self.cancel_button = QPushButton("Stop")
+        self.cancel_button.clicked.connect(self.cancelRequested.emit)
+        self.cancel_button.hide()
+        input_row.addWidget(self.cancel_button)
         footer_layout.addLayout(input_row)
         side.addWidget(footer)
 
@@ -264,38 +272,40 @@ class SearchPanel(QWidget):
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([870, 380])
 
-    def bind_organizer_controls(self, actions: dict, folder_path: QLineEdit) -> None:
-        """Make temporary sidebar copies of MainWindow's existing actions."""
-        self._source_actions = actions
-        self.folder_label = QLabel(folder_path.text())
-        self.folder_label.setWordWrap(True)
-        self.folder_label.setToolTip(folder_path.text())
-        self.organizer_grid.addWidget(self.folder_label, 0, 0, 1, 3)
-        folder_path.textChanged.connect(self.folder_label.setText)
-        folder_path.textChanged.connect(self.folder_label.setToolTip)
+    def _browse(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose a search folder", self.folder.text())
+        if folder:
+            self.folder.setText(folder)
 
-        for index, (label, original) in enumerate(actions.items()):
-            copy = QPushButton(label)
-            copy.clicked.connect(original.click)
-            self.organizer_grid.addWidget(copy, 2 + index // 3, index % 3)
-            self._action_proxies[label] = copy
-        self.organizer_group.show()
-        self.sync_organizer_controls()
+    def set_searching(self, busy):
+        self._busy = busy
+        self.cancel_button.setVisible(busy)
+        self.cancel_button.setEnabled(busy)
+        self._refresh_controls()
 
-    def sync_organizer_controls(self) -> None:
-        for label, original in self._source_actions.items():
-            self._action_proxies[label].setEnabled(original.isEnabled())
-            self._action_proxies[label].setText(original.text())
+    def set_external_busy(self, busy):
+        self._external_busy = busy
+        self._refresh_controls()
+
+    def _refresh_controls(self):
+        enabled = not self._busy and not self._external_busy
+        for control in (self.query, self.search_button, self.folder, self.browse_button):
+            control.setEnabled(enabled)
+        if hasattr(self, 'json_button'):
+            self.json_button.setEnabled(enabled)
+
+    def set_status(self, message):
+        self.response.setText(message)
 
     def _request_search(self) -> None:
+        if self._busy or self._external_busy:
+            return
         query = self.query.text().strip()
         if not query:
             self.query.setFocus()
             return
         self.latest_prompt.setText(query)
-        self.response.setText(
-            "The search input is ready. The semantic-search worker still needs to be connected."
-        )
+        self.response.setText("Preparing your search…")
         self.searchRequested.emit(query)
 
     def display_results(self, payload: dict | str | bytes) -> None:
@@ -312,6 +322,8 @@ class SearchPanel(QWidget):
         query = str(payload.get("query") or "")
         self.query.setText(query)
         self.latest_prompt.setText(query)
+        if isinstance(payload.get('root'), str):
+            self.folder.setText(payload['root'])
 
     @staticmethod
     def _format_file_size(value) -> str:

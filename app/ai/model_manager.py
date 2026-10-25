@@ -14,6 +14,24 @@ class ModelManager:
         self.model_path = models_dir / self.model_info["filename"]
         self.testing_model_info = data["testing_model"]
         self.testing_model_path = models_dir / self.testing_model_info["filename"]
+        self.embedding_model_info = data["embedding_model"]
+        self.embedding_model_path = models_dir / self.embedding_model_info["filename"]
+
+    @property
+    def embedding_downloaded(self):
+        try:
+            with self.embedding_model_path.open("rb") as stream:
+                return (self.embedding_model_path.stat().st_size == self.embedding_model_info["size_bytes"]
+                        and stream.read(4) == b"GGUF")
+        except OSError:
+            return False
+
+    def download_embedding(self, progress_cb=None, cancelled=None):
+        if not self.embedding_downloaded:
+            info = self.embedding_model_info
+            download_file(info["url"], self.embedding_model_path, progress_cb, cancelled,
+                          expected_size=info["size_bytes"], expected_sha256=info["sha256"])
+        return self.embedding_model_path
 
     @property
     def is_downloaded(self):

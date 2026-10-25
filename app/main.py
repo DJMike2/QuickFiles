@@ -3,6 +3,14 @@ import sys
 
 
 def main():
+    from app.platforms import require_supported_platform
+
+    try:
+        require_supported_platform()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
