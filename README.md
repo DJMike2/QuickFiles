@@ -4,19 +4,20 @@ A desktop file organizer powered by **Qwen3.5-4B Q6_K**, running locally through
 llama.cpp. Scan a folder, review the Before/After trees, then apply the proposed
 moves. Undo restores the most recent batch. The organizer never deletes files.
 
-Requires Python 3.10 or newer:
+Supports Windows and Linux only. Requires Python 3.10 or newer:
 
 ```sh
 python -m venv .venv
 # Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
+# Linux: source .venv/bin/activate
 python -m pip install -r requirements.txt
+python tools/build_scanner.py
 python -B -m app.main
 ```
 
 **Setup AI** installs the tested llama.cpp b11869 engine and the 4B Q6_K model
-(3.81 GB). Windows, macOS and Linux packages are supported. CUDA is optional on
-Windows/Linux; Apple Silicon uses Metal. A CPU engine remains available when GPU
+(3.81 GB). Windows and Linux packages are supported. CUDA is optional on
+Windows/Linux. A CPU engine remains available when GPU
 startup fails. Downloads require internet; filenames and document excerpts stay
 on this computer during planning.
 
@@ -45,7 +46,6 @@ Preferences, logs, engines, models and the SQLite undo journal live outside the
 source tree:
 
 - Windows: `%APPDATA%\DesktopOrganizerAI`
-- macOS: `~/Library/Application Support/DesktopOrganizerAI`
 - Linux: `~/.local/share/DesktopOrganizerAI`
 
 **Qwen3.5-9B Q6_K_L** is retained in that data directory's `models/` folder for
@@ -60,6 +60,7 @@ Development checks:
 ```sh
 python -B -m unittest discover -s tests -p 'test_*.py'
 python -B tests/benchmark_scan.py "/path/to/folder"
+python -B tests/benchmark_scan.py "/path/to/folder" --threads 4 --repeat 3
 python -B tests/benchmark_organization.py "/path/to/folder"
 python -B tests/benchmark_organization.py "/path/to/folder" --testing-model --seed 1337
 ```
@@ -68,6 +69,70 @@ The organization benchmark prints proposed Before/After paths and never applies
 them. Its elapsed time includes scanning, context extraction and model loading.
 `-B` avoids Python cache directories. Downloaded models, caches and generated
 build files are excluded from version control.
+
+Recorded before/after performance and validation results are in
+[metrics/README.md](metrics/README.md). Those results reuse existing measurements;
+the older benchmarks were not rerun to produce the report.
+
+## Native file scanner
+
+Folder traversal runs in `app/core/native/fastscan_mt.cpp`, adapted from the
+supplied multithreaded scanner. Windows keeps its buffered NT directory queries
+and relative directory handles. Linux uses `readdir`, `fstatat` and `openat`.
+Python only converts the streamed metadata into the app's inventory. Scanning
+does not read file contents or require the AI engine.
+
+Build once before launching from source; rebuilding is required after changes to
+the C++ source. GCC with C++17 and POSIX threads is required. On Windows, use a
+MinGW-w64 POSIX-thread compiler in PATH (for example, MSYS2's mingw64 toolchain).
+On Linux, use g++ with its static runtime libraries installed.
+
+```sh
+# Build for the current platform:
+python tools/build_scanner.py
+
+# Cross-compile Windows x64 from Linux using MinGW-w64:
+python tools/build_scanner.py --target windows --cxx x86_64-w64-mingw32-g++-posix
+```
+
+Outputs are `app/core/native/bin/fastscan.exe` on Windows and
+`app/core/native/bin/fastscan` on Linux. Both link their runtimes statically;
+Windows needs no extra MinGW DLLs. The binaries built here are x64; build on the
+target architecture for other CPUs. Preserve Linux's executable permission when
+copying it. Distributions must include the corresponding binary at that path.
+The adapter resolves it independently of the working directory and reports a
+build instruction if it is missing. It never compiles during a scan.
+
+The Linux binary is a native ELF executable: it runs directly, with no Wine or
+Windows compatibility layer. The app selects it automatically on Linux. To
+check it directly from the repository root:
+
+```sh
+./app/core/native/bin/fastscan --version
+```
+
+For a complete scan, use the app or `python -B tests/benchmark_scan.py "/path/to/folder"`.
+The executable's scan arguments include an internal policy file supplied by the
+Python adapter. Wine was used only during development on Linux to check the
+separate Windows `.exe`; neither app installation nor Linux scanning requires it.
+
+The scanner prunes hidden/excluded folders, protected locations, links and
+project/application folders before descending. It skips protected filenames,
+Windows system/cloud-only files and nonregular files. Root-level project markers
+do not prevent scanning a folder explicitly selected by the user. Native output
+is buffered JSONL with a version header and completion summary; failures or
+truncated output abort the scan. Cancellation terminates and reaps the process.
+Parallel results are sorted before planning so file IDs and file limits stay
+consistent.
+
+Windows automatically uses up to four workers for detected SSDs, and one for
+HDDs or unknown storage. Linux defaults to one worker for unknown storage.
+`--threads 4` in the scan benchmark overrides that choice. Benchmark timings
+include process startup, native traversal and Python inventory conversion;
+`--repeat` runs each complete scan again. The workflow in
+`.github/workflows/scanner.yml` builds and tests Windows and Linux separately and
+uploads Windows ZIP and Linux tar.gz artifacts (the tar preserves executable
+permissions). Generated binaries are ignored by git.
 
 ## AI Search
 

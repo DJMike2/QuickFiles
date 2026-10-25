@@ -68,8 +68,7 @@ class Validator:
         destinations = {}
 
         def key(value):
-            normalized = os.path.normcase(value).replace("\\", "/")
-            return normalized.casefold() if sys.platform == "darwin" else normalized
+            return os.path.normcase(value).replace("\\", "/")
 
         def occupied(value):
             path = checked_path(self.root, value)

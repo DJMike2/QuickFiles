@@ -47,9 +47,7 @@ class LLMServer:
         attempts = []
         if manager.gpu_binary_path and not self.embedding:
             attempts.append((manager.gpu_binary_path, self.settings["n_gpu_layers"], manager.hardware.backend))
-        metal = manager.hardware.backend == "metal" and not self.embedding
-        attempts.append((manager.cpu_binary_path, self.settings["n_gpu_layers"] if metal else 0,
-                         "metal" if metal else "cpu"))
+        attempts.append((manager.cpu_binary_path, 0, "cpu"))
         errors = []
         for binary, layers, backend in attempts:
             if cancelled():
