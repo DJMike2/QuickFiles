@@ -9,29 +9,24 @@ from pathlib import Path
 
 from app.constants import (
     CONSERVATIVE_EXTENSIONS, DEFAULT_CONTENT_READ_BYTES, DEFAULT_MAX_FILES,
-    EXT_CATEGORY_MAP, READABLE_EXTENSIONS,
+    EXT_CATEGORY_MAP,
 )
 from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
 from app.core.inventory import FileEntry, ScanInventory
 
-_ROLE_HINTS = {
-    "config": ("host", "port", "debug", "database", "api_key", "[settings]", "endpoint"),
-    "log": ("error", "warning", "traceback", "exception", "stdout", "stderr"),
-    "code": ("def ", "class ", "import ", "function ", "const ", "#include", "return "),
-    "draft": ("dear ", "hello ", "regards", "sincerely"),
-    "data": (",", "\t"),
-}
+PROJECT_MARKERS = {".git", "package.json", "manifest.json", "pyproject.toml", "requirements.txt",
+                   "Cargo.toml", "go.mod", "CMakeLists.txt", "node_modules", ".venv", "venv", "setup.py"}
 
 
-def _content_role(sample):
-    if not sample.strip():
-        return "empty", []
-    lower = sample[:1024].lower()
-    for role, hints in _ROLE_HINTS.items():
-        found = [hint.strip() for hint in hints if hint in lower]
-        if found:
-            return role, [hint for hint in found if len(hint) > 2][:6]
-    return "note", []
+def is_project_directory(path):
+    if path.name.casefold() == "issetupprerequisites":
+        return True
+    try:
+        with os.scandir(path) as children:
+            return any(child.name in PROJECT_MARKERS or child.name.endswith((".sln", ".csproj"))
+                       for child in children)
+    except OSError:
+        return True
 
 
 class Scanner:
@@ -64,7 +59,7 @@ class Scanner:
         if not valid:
             raise ValueError(reason)
         started = time.monotonic()
-        inventory = ScanInventory(root=str(self.root))
+        inventory = ScanInventory(root=str(self.root), content_read_bytes=self.content_read_bytes)
 
         def walk_error(_):
             inventory.error_count += 1
@@ -74,6 +69,16 @@ class Scanner:
                 raise InterruptedError("Scan stopped")
             parent = Path(directory)
             dirs[:] = sorted(name for name in dirs if self._allowed(parent / name))
+            descend = []
+            for name in dirs:
+                child = parent / name
+                if is_project_directory(child):
+                    relative = child.relative_to(self.root).as_posix()
+                    inventory.protected_projects.append(relative)
+                    inventory.directories.append(relative)
+                else:
+                    descend.append(name)
+            dirs[:] = descend
             if parent != self.root:
                 inventory.directories.append(parent.relative_to(self.root).as_posix())
             for name in sorted(files):
@@ -102,13 +107,6 @@ class Scanner:
                         parent_folder=parent.name if parent != self.root else "",
                         depth=len(relative.parts) - 1,
                     )
-                    if extension in READABLE_EXTENSIONS and self.content_read_bytes:
-                        try:
-                            with path.open("rb") as stream:
-                                sample = stream.read(self.content_read_bytes).decode("utf-8", errors="replace")
-                            entry.content_role, entry.content_keywords = _content_role(sample)
-                        except OSError:
-                            pass
                     inventory.entries.append(entry)
                     if inventory.total_files % 100 == 0:
                         self.progress_cb(inventory.total_files, 0, name)

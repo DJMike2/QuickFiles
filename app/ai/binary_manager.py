@@ -1,4 +1,4 @@
-"""Install a matching llama.cpp engine and optional GPU build."""
+"""Install the same llama.cpp release used to test the Qwen models."""
 from __future__ import annotations
 
 import json
@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -16,6 +17,7 @@ from pathlib import Path
 from app.ai.model_downloader import download_file
 
 log = logging.getLogger(__name__)
+ENGINE_RELEASE = "b11869"
 
 
 class BinaryManager:
@@ -50,92 +52,126 @@ class BinaryManager:
 
     def _platform_patterns(self):
         arm = platform.machine().lower() in {"arm64", "aarch64"}
+        arch = "arm64" if arm else "x64"
         if sys.platform == "win32":
-            return [r"^llama-.*-bin-win-arm64\.zip$"] if arm else [
-                r"^llama-.*-bin-win-avx2-x64\.zip$", r"^llama-.*-bin-win-avx-x64\.zip$",
-                r"^llama-.*-bin-win-x64\.zip$",
-            ]
+            return [rf"^llama-{ENGINE_RELEASE}-bin-win-cpu-{arch}\.zip$"]
         if sys.platform == "darwin":
-            return [rf"^llama-.*-bin-macos-{'arm64' if arm else 'x64'}\.zip$"]
-        raise RuntimeError("Automatic AI installation requires Windows or macOS")
+            return [rf"^llama-{ENGINE_RELEASE}-bin-macos-{arch}\.tar\.gz$"]
+        if sys.platform.startswith("linux"):
+            return [rf"^llama-{ENGINE_RELEASE}-bin-ubuntu-{arch}\.tar\.gz$"]
+        raise RuntimeError("No automatic AI engine package is available for this operating system")
 
     def download(self, progress_cb=None, cancelled=None, status_cb=None):
         cancelled = cancelled or (lambda: False)
         status_cb = status_cb or (lambda message: None)
         patterns = self._platform_patterns()
-        if self.hardware.os_warning and sys.platform in {"win32", "darwin"}:
+        if self.hardware.os_warning:
             raise RuntimeError(self.hardware.os_warning)
-        status_cb("Checking the latest llama.cpp release…")
+        status_cb(f"Checking llama.cpp {ENGINE_RELEASE}…")
         request = urllib.request.Request(
-            "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest",
+            f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{ENGINE_RELEASE}",
             headers={"User-Agent": "QuickFiles/1.0", "Accept": "application/vnd.github+json"},
         )
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=20) as response:
             assets = json.load(response).get("assets", [])
 
         def find_asset(patterns):
-            for pattern in patterns:
-                for asset in assets:
-                    if re.fullmatch(pattern, asset["name"], re.IGNORECASE):
-                        return asset
-            return None
+            return next((asset for pattern in patterns for asset in assets
+                         if re.fullmatch(pattern, asset["name"], re.IGNORECASE)), None)
 
         cpu_asset = find_asset(patterns)
         if cpu_asset is None:
-            raise RuntimeError("This llama.cpp release has no matching CPU build for this computer")
+            raise RuntimeError("This engine release has no matching CPU build for this computer")
         self.bin_dir.mkdir(parents=True, exist_ok=True)
 
-        def install(asset, kind, dlls_only=False):
+        def install(asset, kind, libraries_only=False):
             if cancelled():
                 raise InterruptedError("Installation cancelled")
             status_cb(f"Downloading {asset['name']}…")
-            # Staging keeps partial installations out of the active engine directory.
             with tempfile.TemporaryDirectory(prefix="install-", dir=self.bin_dir) as staging:
                 stage = Path(staging)
-                package = download_file(asset["browser_download_url"], stage / "engine.zip", progress_cb, cancelled)
+                package = download_file(asset["browser_download_url"], stage / asset["name"],
+                                        progress_cb, cancelled)
                 extracted = stage / "files"
                 extracted.mkdir()
-                with zipfile.ZipFile(package) as archive:
-                    for member in archive.infolist():
-                        if cancelled():
-                            raise InterruptedError("Installation cancelled")
-                        if member.is_dir():
-                            continue
-                        name = Path(member.filename).name
-                        if name in {"", ".", ".."} or (dlls_only and not name.lower().endswith(".dll")):
-                            continue
-                        target = extracted / name
-                        with archive.open(member) as original, target.open("wb") as output:
-                            shutil.copyfileobj(original, output)
+
+                def unpack(name, stream=None, link=None):
+                    if cancelled():
+                        raise InterruptedError("Installation cancelled")
+                    name = Path(name).name
+                    if name in {"", ".", ".."}:
+                        return
+                    if libraries_only and not (name.lower().endswith(".dll") or ".so" in name):
+                        return
+                    target = extracted / name
+                    if target.exists() or target.is_symlink():
+                        target.unlink()
+                    if link is not None:
+                        # Keep aliases inside the flattened engine directory.
+                        alias = Path(link).name
+                        if alias in {"", ".", ".."} or alias == name:
+                            raise ValueError("Invalid engine library alias")
+                        target.symlink_to(alias)
+                    else:
+                        with target.open("wb") as output:
+                            shutil.copyfileobj(stream, output)
                         if sys.platform != "win32":
                             target.chmod(0o755)
-                if not dlls_only and not (extracted / self.server_name).is_file():
-                    raise RuntimeError("The downloaded engine package contains no llama-server")
-                destination = self.bin_dir / kind
-                destination.mkdir(exist_ok=True)
-                for file in extracted.iterdir():
-                    file.replace(destination / file.name)
 
-        if not self.is_available:
+                if zipfile.is_zipfile(package):
+                    with zipfile.ZipFile(package) as archive:
+                        for member in archive.infolist():
+                            if not member.is_dir():
+                                with archive.open(member) as stream:
+                                    unpack(member.filename, stream)
+                else:
+                    with tarfile.open(package, "r:gz") as archive:
+                        for member in archive:
+                            if member.isfile():
+                                with archive.extractfile(member) as stream:
+                                    unpack(member.name, stream)
+                            elif member.issym() or member.islnk():
+                                unpack(member.name, link=member.linkname)
+                if not libraries_only and not (extracted / self.server_name).is_file():
+                    raise RuntimeError("The engine package contains no llama-server")
+                destination = self.bin_dir / kind
+                if libraries_only:
+                    destination.mkdir(exist_ok=True)
+                    for item in extracted.iterdir():
+                        item.replace(destination / item.name)
+                else:
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    extracted.replace(destination)
+
+        release_file = self.bin_dir / "release.txt"
+        installed_release = release_file.read_text().strip() if release_file.is_file() else ""
+        upgrade = installed_release != ENGINE_RELEASE
+        if upgrade or not self.is_available:
             install(cpu_asset, "cpu")
-        machine = platform.machine().lower()
-        if sys.platform == "win32" and machine not in {"arm64", "aarch64"}:
-            variant = self.hardware.backend
-            if variant in {"cuda", "vulkan"} and not self.has_gpu_build:
-                gpu = find_asset([rf"^llama-.*-bin-win-{variant}.*x64\.zip$"])
+        arm = platform.machine().lower() in {"arm64", "aarch64"}
+        arch = "arm64" if arm else "x64"
+        variant = self.hardware.backend
+        if sys.platform in {"win32", "linux"} and variant in {"cuda", "vulkan"}:
+            if upgrade or not self.has_gpu_build:
+                system = "win" if sys.platform == "win32" else "ubuntu"
+                suffix = r"\.zip" if system == "win" else r"\.tar\.gz"
+                cuda_version = "13.4" if arm else "12.4" if system == "win" else "12.8"
+                tag = f"cuda-{cuda_version}" if variant == "cuda" else "vulkan"
+                gpu = find_asset([rf"^llama-{ENGINE_RELEASE}-bin-{system}-{re.escape(tag)}-{arch}{suffix}$"])
                 if gpu:
                     try:
                         install(gpu, "gpu")
                         if variant == "cuda":
-                            version = re.search(r"cuda-([\d.]+)", gpu["name"])
                             runtime = find_asset([
-                                rf"^cudart-llama-bin-win-cuda-{re.escape(version.group(1))}.*x64\.zip$"
-                            ]) if version else None
+                                rf"^cudart-llama(?:-{ENGINE_RELEASE})?-bin-{system}-cuda-{re.escape(cuda_version)}-{arch}{suffix}$"
+                            ])
                             if runtime:
-                                install(runtime, "gpu", dlls_only=True)
+                                install(runtime, "gpu", libraries_only=True)
                     except InterruptedError:
                         raise
                     except Exception as exc:
                         log.warning("Optional GPU installation failed: %s", exc)
                         status_cb("GPU build unavailable; the CPU engine remains available")
+        release_file.write_text(ENGINE_RELEASE + "\n")
         return self.cpu_binary_path
