@@ -1,118 +1,266 @@
-"""Walk the selected folder and inspect bounded text samples."""
+"""Adapt the native scanner's JSONL stream to the app's inventory interface."""
 from __future__ import annotations
 
 import fnmatch
+import heapq
+import json
 import os
-import stat
-import time
 from pathlib import Path
+import queue
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 
 from app.constants import (
     CONSERVATIVE_EXTENSIONS, DEFAULT_CONTENT_READ_BYTES, DEFAULT_MAX_FILES,
     EXT_CATEGORY_MAP,
 )
-from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
+from app.core.blocked_paths import blocked_roots, resolve_safe, validate_root_selection
 from app.core.inventory import FileEntry, ScanInventory
+from app.core.naming import relative_parts
+from app.platforms import require_supported_platform
 
 PROJECT_MARKERS = {".git", "package.json", "manifest.json", "pyproject.toml", "requirements.txt",
                    "Cargo.toml", "go.mod", "CMakeLists.txt", "node_modules", ".venv", "venv", "setup.py"}
+NATIVE_DIR = Path(__file__).resolve().parent / "native"
 
 
-def is_project_directory(path):
-    if path.name.casefold() == "issetupprerequisites":
-        return True
+def _entry_order(entry):
+    return (tuple(entry.rel_path.split("/")[:-1]), entry.filename)
+
+
+class _Candidate:
+    """A reverse-order heap retains only the first max_files deterministic paths."""
+    __slots__ = ("entry", "key")
+
+    def __init__(self, entry):
+        self.entry = entry
+        self.key = _entry_order(entry)
+
+    def __lt__(self, other):
+        return self.key > other.key
+
+
+def scanner_binary() -> Path:
+    """Resolve independently of cwd; packaged apps must include core/native/bin."""
+    require_supported_platform()
+    return NATIVE_DIR / "bin" / ("fastscan.exe" if sys.platform == "win32" else "fastscan")
+
+
+def _native_glob(pattern: str) -> str:
+    # fnmatch supplies escaping, ranges and malformed-bracket semantics. Translate
+    # its Python-only dotall/atomic syntax to equivalent ECMAScript regex syntax.
+    expression = fnmatch.translate(os.path.normcase(pattern))
+    expression = expression[4:expression.rfind(")")].replace("(?>", "(?:")
+    result = []
+    in_class = False
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char == "\\":
+            result.append(expression[index:index + 2])
+            index += 2
+            continue
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        result.append("[\\s\\S]" if char == "." and not in_class else char)
+        index += 1
+    return "".join(result)
+
+
+def _write_policy(path: Path, excludes):
+    fields = [("exclude", _native_glob(pattern)) for pattern in excludes]
+    fields.extend(("marker", name) for name in sorted(PROJECT_MARKERS))
+    fields.extend(("blocked", str(resolve_safe(root))) for root in blocked_roots())
+    with path.open("wb") as output:
+        for key, value in fields:
+            if "\0" in value:
+                raise ValueError("Scanner policy cannot contain NUL characters")
+            output.write(key.encode("utf-8") + b"\0" + value.encode("utf-8") + b"\0")
+
+
+def _read_output(pipe, chunks, stop):
+    """A bounded queue keeps cancellation responsive even on a stalled filesystem."""
     try:
-        with os.scandir(path) as children:
-            return any(child.name in PROJECT_MARKERS or child.name.endswith((".sln", ".csproj"))
-                       for child in children)
-    except OSError:
-        return True
+        while not stop.is_set():
+            chunk = pipe.read1(64 * 1024)
+            while not stop.is_set():
+                try:
+                    chunks.put(chunk, timeout=0.05)
+                    break
+                except queue.Full:
+                    continue
+            if not chunk:
+                return
+    except (OSError, ValueError) as exc:
+        while not stop.is_set():
+            try:
+                chunks.put(exc, timeout=0.05)
+                return
+            except queue.Full:
+                continue
 
 
 class Scanner:
     def __init__(self, root: Path, *, max_files=DEFAULT_MAX_FILES,
                  content_read_bytes=DEFAULT_CONTENT_READ_BYTES, exclude_patterns=None,
-                 progress_cb=None, cancelled=None):
+                 progress_cb=None, cancelled=None, threads=0):
         self.root = resolve_safe(root)
+        self._root_string = str(self.root)
         self.max_files = max(1, int(max_files))
         self.content_read_bytes = max(0, min(int(content_read_bytes), 256 * 1024))
         self.exclude_patterns = exclude_patterns or []
         self.progress_cb = progress_cb or (lambda n, total, name: None)
         self.cancelled = cancelled or (lambda: False)
-
-    def _excluded(self, name):
-        return name.startswith(".") or any(
-            fnmatch.fnmatch(name, pattern) for pattern in self.exclude_patterns
-        )
-
-    def _allowed(self, path):
-        if self._excluded(path.name):
-            return False
-        try:
-            checked_path(self.root, path.relative_to(self.root).as_posix())
-            return True
-        except (OSError, RuntimeError, ValueError):
-            return False
+        self.threads = int(threads)
+        if not 0 <= self.threads <= 64:
+            raise ValueError("Scanner threads must be between 0 (auto) and 64")
+        self.binary_path = scanner_binary()
+        self.native_threads = 0
 
     def scan(self) -> ScanInventory:
         valid, reason = validate_root_selection(self.root)
         if not valid:
             raise ValueError(reason)
+        if self.cancelled():
+            raise InterruptedError("Scan stopped")
+        if not self.binary_path.is_file():
+            raise OSError("Native scanner is missing. Run 'python tools/build_scanner.py' "
+                          "or install a build containing the scanner binary.")
         started = time.monotonic()
         inventory = ScanInventory(root=str(self.root), content_read_bytes=self.content_read_bytes)
-
-        def walk_error(_):
-            inventory.error_count += 1
-
-        for directory, dirs, files in os.walk(self.root, followlinks=False, onerror=walk_error):
-            if self.cancelled():
-                raise InterruptedError("Scan stopped")
-            parent = Path(directory)
-            dirs[:] = sorted(name for name in dirs if self._allowed(parent / name))
-            descend = []
-            for name in dirs:
-                child = parent / name
-                if is_project_directory(child):
-                    relative = child.relative_to(self.root).as_posix()
-                    inventory.protected_projects.append(relative)
-                    inventory.directories.append(relative)
-                else:
-                    descend.append(name)
-            dirs[:] = descend
-            if parent != self.root:
-                inventory.directories.append(parent.relative_to(self.root).as_posix())
-            for name in sorted(files):
-                if self.cancelled():
-                    raise InterruptedError("Scan stopped")
-                if inventory.total_files >= self.max_files:
-                    inventory.skipped_count += 1
-                    continue
-                path = parent / name
-                if not self._allowed(path):
-                    inventory.skipped_count += 1
-                    continue
+        candidates = [] if self.max_files < DEFAULT_MAX_FILES else None
+        self._seen_files = 0
+        # Close the policy before launching to support Windows file sharing.
+        with tempfile.TemporaryDirectory(prefix="quickfiles-scan-") as temporary:
+            policy = Path(temporary) / "policy.bin"
+            _write_policy(policy, self.exclude_patterns)
+            with (Path(temporary) / "stderr.txt").open("w+b") as diagnostics:
+                process = subprocess.Popen(
+                    [str(self.binary_path), str(self.root), str(policy), str(self.threads)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=diagnostics,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+                stop = threading.Event()
+                chunks = queue.Queue(maxsize=4)
+                reader = threading.Thread(target=_read_output, args=(process.stdout, chunks, stop),
+                                          name="fastscan-output", daemon=True)
+                reader.start()
+                header = summary = False
+                pending = b""
                 try:
-                    info = path.stat()
-                    if not stat.S_ISREG(info.st_mode):
-                        inventory.skipped_count += 1
-                        continue
-                    relative = path.relative_to(self.root)
-                    extension = path.suffix.lower()
-                    entry = FileEntry(
-                        rel_path=relative.as_posix(), filename=name, extension=extension,
-                        abs_path=str(path), size_bytes=info.st_size, modified_ts=info.st_mtime,
-                        file_type_bucket=EXT_CATEGORY_MAP.get(extension, "Misc"),
-                        is_conservative=extension in CONSERVATIVE_EXTENSIONS,
-                        is_empty=info.st_size == 0,
-                        parent_folder=parent.name if parent != self.root else "",
-                        depth=len(relative.parts) - 1,
-                    )
-                    inventory.entries.append(entry)
-                    if inventory.total_files % 100 == 0:
-                        self.progress_cb(inventory.total_files, 0, name)
-                except PermissionError:
-                    inventory.skipped_count += 1
-                except OSError:
-                    inventory.error_count += 1
+                    while True:
+                        if self.cancelled():
+                            raise InterruptedError("Scan stopped")
+                        try:
+                            chunk = chunks.get(timeout=0.05)
+                        except queue.Empty:
+                            continue
+                        if isinstance(chunk, Exception):
+                            raise OSError(f"Could not read native scanner output: {chunk}")
+                        if not chunk:
+                            break
+                        lines = (pending + chunk).split(b"\n")
+                        pending = lines.pop()
+                        if len(pending) > 1024 * 1024:
+                            raise OSError("Native scanner emitted an oversized record")
+                        for raw in lines:
+                            if self.cancelled():
+                                raise InterruptedError("Scan stopped")
+                            try:
+                                record = json.loads(raw)
+                                kind = record["t"]
+                                if summary:
+                                    raise ValueError("Records after scanner summary")
+                                if kind == "H" and not header:
+                                    if record["protocol"] != 1:
+                                        raise ValueError("Unsupported scanner protocol; rebuild the binary")
+                                    self.native_threads = int(record["threads"])
+                                    header = True
+                                elif not header:
+                                    raise ValueError("Missing scanner protocol header")
+                                elif kind == "S":
+                                    inventory.skipped_count += int(record["skipped"])
+                                    inventory.error_count += int(record["errors"])
+                                    summary = True
+                                elif kind in {"D", "P", "F"}:
+                                    self._add_record(record, inventory, candidates)
+                                else:
+                                    raise ValueError("Unknown scanner record")
+                            except (KeyError, TypeError, ValueError, UnicodeError) as exc:
+                                raise OSError(f"Invalid native scanner output: {exc}") from exc
+                    while process.poll() is None:
+                        if self.cancelled():
+                            raise InterruptedError("Scan stopped")
+                        try:
+                            process.wait(timeout=0.05)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    if process.returncode:
+                        diagnostics.seek(0)
+                        message = diagnostics.read(8192).decode("utf-8", errors="replace").strip()
+                        raise OSError(f"Native scanner failed ({process.returncode}): {message}")
+                    if pending or not header or not summary:
+                        raise OSError("Native scanner returned an incomplete inventory")
+                finally:
+                    stop.set()
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                    reader.join(timeout=2)
+                    process.stdout.close()
+        # Native workers finish out of order. Preserve stable planner IDs and caps.
+        if candidates is not None:
+            inventory.entries = [candidate.entry for candidate in candidates]
+        inventory.entries.sort(key=_entry_order)
+        inventory.skipped_count += self._seen_files - len(inventory.entries)
+        inventory.directories.sort()
+        inventory.protected_projects.sort()
         inventory.scan_duration_s = time.monotonic() - started
         return inventory
+
+    def _add_record(self, record, inventory, candidates):
+        relative = record["p"]
+        try:
+            parts = relative_parts(relative)
+        except ValueError:
+            if record["t"] == "F":
+                inventory.skipped_count += 1
+            return
+        if "/".join(parts) != relative:
+            raise ValueError("Scanner path is not a normalized relative path")
+        if record["t"] in {"P", "D"}:
+            inventory.directories.append(relative)
+            if record["t"] == "P":
+                inventory.protected_projects.append(relative)
+            return
+        name = parts[-1]
+        _, dot, suffix = name.rpartition(".")
+        extension = (dot + suffix).lower() if dot else ""
+        size = int(record["sz"])
+        entry = FileEntry(
+            rel_path=relative, filename=name, extension=extension,
+            abs_path=os.path.join(self._root_string, *parts), size_bytes=size,
+            modified_ts=float(record["mt"]), file_type_bucket=EXT_CATEGORY_MAP.get(extension, "Misc"),
+            is_conservative=extension in CONSERVATIVE_EXTENSIONS, is_empty=size == 0,
+            parent_folder=parts[-2] if len(parts) > 1 else "", depth=len(parts) - 1,
+        )
+        self._seen_files += 1
+        if candidates is None:
+            inventory.entries.append(entry)
+        else:
+            candidate = _Candidate(entry)
+            if len(candidates) < self.max_files:
+                heapq.heappush(candidates, candidate)
+            elif candidate.key < candidates[0].key:
+                heapq.heapreplace(candidates, candidate)
+        if self._seen_files % 100 == 0:
+            self.progress_cb(min(self._seen_files, self.max_files), 0, name)

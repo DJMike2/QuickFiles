@@ -10,7 +10,6 @@ from app.core.naming import relative_parts
 UNIX_BLOCKED_ROOTS = (
     "/bin", "/sbin", "/usr", "/lib", "/lib64", "/lib32", "/etc", "/var",
     "/run", "/sys", "/proc", "/dev", "/boot", "/snap", "/opt",
-    "/System", "/Library", "/private",
 )
 _WIN_DRIVE_NAMES = (
     "Windows", "Program Files", "Program Files (x86)", "Program Files (Arm)",
@@ -36,7 +35,7 @@ def blocked_roots() -> list[Path]:
     if sys.platform != "win32":
         roots = [Path(value) for value in UNIX_BLOCKED_ROOTS]
         home = Path.home()
-        roots.append(home / "Library" if sys.platform == "darwin" else home / "snap")
+        roots.append(home / "snap")
     else:
         drive = os.environ.get("SystemDrive", "C:")
         roots = [Path(drive + "/") / name for name in _WIN_DRIVE_NAMES]
@@ -165,8 +164,6 @@ def _checked_local_path(root: Path, path: Path) -> Path:
 def _account_parents() -> list[Path]:
     if sys.platform == "win32":
         return [Path(os.environ.get("SystemDrive", "C:") + "/") / "Users"]
-    if sys.platform == "darwin":
-        return [Path("/Users")]
     return [Path("/home")]
 
 

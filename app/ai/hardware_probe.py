@@ -10,6 +10,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from app.platforms import require_supported_platform
+
 
 @dataclass
 class HardwareProfile:
@@ -45,11 +47,7 @@ def _ram_gb():
         status.length = ctypes.sizeof(status)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return status.total_phys / 1073741824
-    elif sys.platform == "darwin":
-        value = _run(["sysctl", "-n", "hw.memsize"])
-        if value.isdigit():
-            return int(value) / 1073741824
-    else:
+    elif sys.platform == "linux":
         try:
             return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1073741824
         except (OSError, ValueError):
@@ -58,6 +56,7 @@ def _ram_gb():
 
 
 def probe():
+    require_supported_platform()
     hardware = HardwareProfile(platform.processor() or platform.machine(), os.cpu_count() or 1, _ram_gb())
     if sys.platform == "win32":
         if sys.getwindowsversion().major < 10:
@@ -92,25 +91,14 @@ def probe():
                             hardware.backend = "vulkan"
             except (ValueError, TypeError, AttributeError):
                 pass
-    elif sys.platform == "darwin":
-        hardware.cpu_name = _run(["sysctl", "-n", "machdep.cpu.brand_string"]) or hardware.cpu_name
-        if platform.machine().lower() in {"arm64", "aarch64"}:
-            hardware.gpu_name, hardware.backend = "Apple Silicon", "metal"
-            hardware.vram_gb = hardware.ram_gb / 2
-        version = platform.mac_ver()[0]
-        if version and int(version.split(".")[0]) < 12:
-            hardware.os_warning = "Automatic AI installation requires macOS 12 or newer."
     else:
-        if sys.platform.startswith("linux"):
-            raw = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
-            if raw:
-                try:
-                    name, memory = raw.splitlines()[0].rsplit(",", 1)
-                    hardware.gpu_name = name.strip()
-                    hardware.vram_gb = float(memory) / 1024
-                    hardware.backend = "cuda"
-                except ValueError:
-                    pass
-        else:
-            hardware.os_warning = "Automatic AI installation is unavailable on this operating system."
+        raw = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+        if raw:
+            try:
+                name, memory = raw.splitlines()[0].rsplit(",", 1)
+                hardware.gpu_name = name.strip()
+                hardware.vram_gb = float(memory) / 1024
+                hardware.backend = "cuda"
+            except ValueError:
+                pass
     return hardware
