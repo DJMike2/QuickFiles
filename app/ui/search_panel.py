@@ -112,11 +112,12 @@ class SearchPanel(QWidget):
 
         # The search folder lives in the main toolbar; standalone panels keep it here.
         self.scope_bar = QWidget()
+        self.scope_bar.setObjectName("scopeBar")
         scope_layout = QHBoxLayout(self.scope_bar)
         scope_layout.setContentsMargins(0, 0, 0, 0)
         scope_layout.setSpacing(6)
         scope_label = QLabel("Search in:")
-        scope_label.setStyleSheet("font-weight:600;")
+        scope_label.setObjectName("toolbarLabel")
         scope_layout.addWidget(scope_label)
         self.folder = QLineEdit()
         self.folder.setMinimumWidth(200)

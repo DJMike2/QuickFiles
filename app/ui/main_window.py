@@ -74,11 +74,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(toolbar_frame)
         # Organize and AI Search share the toolbar; folder controls only apply to Organize.
         self.organize_tools = QWidget()
+        self.organize_tools.setObjectName("organizeTools")
         tools = QHBoxLayout(self.organize_tools)
         tools.setContentsMargins(0, 0, 0, 0)
         tools.setSpacing(6)
         folder_label = QLabel("Folder:")
-        folder_label.setStyleSheet("font-weight:600;")
+        folder_label.setObjectName("toolbarLabel")
         tools.addWidget(folder_label)
         self.path = QLineEdit(self.config.get("allowed_root"))
         self.path.setMinimumWidth(200)
