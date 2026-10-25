@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -59,11 +59,6 @@ class MainWindow(QMainWindow):
         self.undo = QPushButton("Undo")
         self.undo.clicked.connect(self._undo)
         toolbar.addWidget(self.undo)
-        self.mode = QComboBox()
-        self.mode.addItems(["fast", "accurate", "auto"])
-        self.mode.setCurrentText(self.config.get("mode"))
-        self.mode.currentTextChanged.connect(self._mode_changed)
-        toolbar.addWidget(self.mode)
         self.setup = QPushButton("Setup AI")
         self.setup.clicked.connect(self._setup)
         toolbar.addWidget(self.setup)
@@ -106,7 +101,7 @@ class MainWindow(QMainWindow):
         self.undo.setEnabled(not busy and self.ctx.journal.get_latest_batch() is not None)
         self.scan.setText("Stop" if busy and self._job_kind == "scan" else "Scan")
         self.scan.setEnabled(not busy or self._job_kind == "scan")
-        for widget in (self.path, self.browse, self.mode, self.setup, self.settings, self.preview):
+        for widget in (self.path, self.browse, self.setup, self.settings, self.preview):
             widget.setEnabled(not busy)
         self.backend.setText(self.ctx.runtime.backend_label)
 
@@ -122,10 +117,6 @@ class MainWindow(QMainWindow):
             self.path.setText(folder)
             self.config.set("allowed_root", folder)
             self._invalidate()
-
-    def _mode_changed(self, mode):
-        self.config.set("mode", mode)
-        self._invalidate()
 
     def _show_banner(self, text):
         self.banner.setText(text)
@@ -163,10 +154,8 @@ class MainWindow(QMainWindow):
             "content_read_bytes": self.config.get("content_read_bytes"),
             "exclude_patterns": list(self.config.get("exclude_patterns")),
         }
-        mode = self.ctx.mode
         shortcuts = self.config.get("shortcuts_movable")
         suffix = self.config.get("duplicate_suffix_allowed")
-        threshold = self.ctx.model_manager.profile(mode)["confidence_threshold"]
         self._invalidate()
         self._show_banner("")
 
@@ -176,7 +165,8 @@ class MainWindow(QMainWindow):
                                 progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
             if cancelled():
                 raise InterruptedError("Scan stopped")
-            plan = Planner(self.ctx.runtime, mode, threshold, progress_cb=status, cancelled=cancelled).plan(inventory)
+            plan = Planner(self.ctx.runtime, progress_cb=status, cancelled=cancelled,
+                           shortcuts_movable=shortcuts).plan(inventory)
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
@@ -285,7 +275,6 @@ class MainWindow(QMainWindow):
     def _settings(self):
         if SettingsDialog(self.ctx, self).exec():
             self.path.setText(self.config.get("allowed_root"))
-            self.mode.setCurrentText(self.config.get("mode"))
             self._theme()
             self._invalidate()
             self.ctx.runtime.shutdown()

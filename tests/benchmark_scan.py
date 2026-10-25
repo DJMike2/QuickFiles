@@ -1,4 +1,4 @@
-"""Time the app's scanner, including its normal text sampling. No files are changed."""
+"""Time the app's metadata scanner. AI content reading and planning are separate."""
 import argparse
 from pathlib import Path
 import sys
