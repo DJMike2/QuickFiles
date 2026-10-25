@@ -32,12 +32,30 @@ QDialog {
     color: #e2e4f0;
 }
 
+/* === TITLE BAR === */
+QMainWindow#mainWindow { background-color: transparent; }
+QFrame#titleBar {
+    background-color: qlineargradient(x1:0, y1:1, x2:0, y2:0,
+        stop:0 rgba(0, 0, 0, 235), stop:1 rgba(8, 12, 30, 235));
+    border: none;
+}
+QLabel#titleText { color: #c8d4f5; font-weight: 600; background-color: transparent; }
+QPushButton#titleBtn, QPushButton#titleCloseBtn {
+    background-color: transparent; color: #c8d4f5; border: none; border-radius: 0;
+    min-width: 46px; max-width: 46px; padding: 0;
+}
+QPushButton#titleBtn:hover { background-color: rgba(255, 255, 255, 30); }
+QPushButton#titleBtn:pressed { background-color: rgba(255, 255, 255, 50); }
+QPushButton#titleCloseBtn:hover { background-color: #e81123; color: #ffffff; }
+QPushButton#titleCloseBtn:pressed { background-color: #f1707a; color: #ffffff; }
+
 /* === TOOLBAR === */
 QFrame#toolbar {
     background-color: #1a1b2e;
     border: none;
     border-bottom: 2px solid #2d3050;
 }
+QFrame#toolbar QPushButton { padding-top: 1px; padding-bottom: 1px; }
 
 /* === LABELS === */
 QLabel {
@@ -271,7 +289,6 @@ QTreeView {
 QTreeView::item { padding: 3px 6px; }
 QTreeView::item:hover { background-color: #252d55; }
 QTreeView::item:selected { background-color: #2d5599; color: #ffffff; }
-QTreeView::branch { background-color: transparent; }
 
 /* === SCROLL BARS === */
 QScrollBar:vertical {

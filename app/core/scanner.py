@@ -1,12 +1,14 @@
 """Adapt the native scanner's JSONL stream to the app's inventory interface."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import fnmatch
 import heapq
 import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -83,6 +85,25 @@ def _write_policy(path: Path, excludes):
             output.write(key.encode("utf-8") + b"\0" + value.encode("utf-8") + b"\0")
 
 
+@contextmanager
+def _scratch_dir():
+    """Windows may keep a dead child's stderr file locked briefly; cleanup must not mask the scan result."""
+    path = Path(tempfile.mkdtemp(prefix="quickfiles-scan-"))
+    try:
+        yield path
+    finally:
+        for attempt in range(20):
+            try:
+                shutil.rmtree(path)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                time.sleep(0.05 * (attempt + 1))
+        else:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def _read_output(pipe, chunks, stop):
     """A bounded queue keeps cancellation responsive even on a stalled filesystem."""
     try:
@@ -136,10 +157,10 @@ class Scanner:
         candidates = [] if self.max_files < DEFAULT_MAX_FILES else None
         self._seen_files = 0
         # Close the policy before launching to support Windows file sharing.
-        with tempfile.TemporaryDirectory(prefix="quickfiles-scan-") as temporary:
-            policy = Path(temporary) / "policy.bin"
+        with _scratch_dir() as temporary:
+            policy = temporary / "policy.bin"
             _write_policy(policy, self.exclude_patterns)
-            with (Path(temporary) / "stderr.txt").open("w+b") as diagnostics:
+            with (temporary / "stderr.txt").open("w+b") as diagnostics:
                 process = subprocess.Popen(
                     [str(self.binary_path), str(self.root), str(policy), str(self.threads)],
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=diagnostics,
