@@ -62,6 +62,10 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
       - name: Test scanner and planning integration
+        env:
+          # Windows' default temp folder is inside protected AppData. Keep test
+          # fixtures in the runner's scratch directory so real path checks apply.
+          TMPDIR: ${{ runner.temp }}
         run: python -B -m unittest discover -s tests -p "test_*.py"
       - name: Run native scan benchmark
         run: python -B tests/benchmark_scan.py . --threads 4 --repeat 2
