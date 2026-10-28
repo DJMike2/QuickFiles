@@ -128,6 +128,15 @@ Tests, benchmark tools, and performance reports are maintained locally. Public C
 builds and smoke-checks the Windows and Linux scanners. Models, caches, and
 generated binaries are excluded from version control.
 
+## License
+
+QuickFiles is **source-available** under the [Sustainable Use License 1.0](LICENSE).
+Personal use, internal business use, and modifications for those purposes are allowed.
+Sharing must be free of charge and for noncommercial purposes; selling copies or
+charging others for hosted access requires separate permission.
+
+Third-party dependencies and model weights retain their respective licenses.
+
 ---
 
 [Organizer guide](docs/organizer-process.md) · [Benchmarks](docs/benchmarks.md) · [License](LICENSE)
