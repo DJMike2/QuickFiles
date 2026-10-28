@@ -139,4 +139,4 @@ Third-party dependencies and model weights retain their respective licenses.
 
 ---
 
-[Organizer process](docs/organizer-process.md) · [License](LICENSE)
+[Organizer guide](docs/organizer-process.md) · [Benchmarks](docs/benchmarks.md) · [License](LICENSE)
