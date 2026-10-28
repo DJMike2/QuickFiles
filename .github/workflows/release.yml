@@ -1,4 +1,67 @@
 
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            scanner: fastscan
+            archive: QuickFiles-linux-x64.tar.gz
+          - os: windows-latest
+            scanner: fastscan.exe
+            archive: QuickFiles-windows-x64.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure Windows compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "C:\msys64\mingw64\bin" |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build native scanner
+        run: python -B tools/build_scanner.py
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build QuickFiles
+        run: >
+          pyinstaller --noconfirm --clean --windowed
+          --name QuickFiles
+          --paths .
+          --collect-submodules app
+          --add-data "app/ui/themes:app/ui/themes"
+          --add-data "models/settings.json:models"
+          --add-binary "app/core/native/bin/${{ matrix.scanner }}:app/core/native/bin"
+          release/launcher.py
+
+      - name: Verify packaged scanner
+        shell: bash
+        run: |
+          test -f "dist/QuickFiles/_internal/app/core/native/bin/${{ matrix.scanner }}"
+
       - name: Sign Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -21,7 +84,7 @@
               Select-Object -First 1 -ExpandProperty FullName
 
             if (-not $signtool) {
-              throw "SignTool was not found"
+              throw "SignTool not found"
             }
 
             & $signtool sign /fd SHA256 `
@@ -34,12 +97,53 @@
             }
 
             $signature = Get-AuthenticodeSignature "dist/QuickFiles/QuickFiles.exe"
+
             if ($signature.SignerCertificate.Subject -notlike "*CN=QuickFiles Dev*") {
               throw "Unexpected signing certificate"
             }
 
-            Write-Host "QuickFiles signature embedded"
+            Write-Host "QuickFiles signing completed"
           }
           finally {
             Remove-Item $certPath -Force -ErrorAction SilentlyContinue
           }
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: tar -czf ${{ matrix.archive }} -C dist QuickFiles
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/QuickFiles -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" assets/*
+          --repo "$GITHUB_REPOSITORY"
+          --title "QuickFiles $GITHUB_REF_NAME"
+          --generate-notes
+          --draft
