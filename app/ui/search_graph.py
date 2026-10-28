@@ -16,9 +16,12 @@ load a model, classify files, or organize anything on disk.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any, Callable
+
+log = logging.getLogger(__name__)
 
 from PySide6.QtCore import (
     QEasingCurve, QPointF, QRectF, Qt, QLineF, Signal, QUrl, QVariantAnimation,
@@ -559,10 +562,12 @@ class SearchGraphWidget(QWidget):
         if not self.open_files_on_click:
             return
         if not path or not Path(path).is_file():
+            log.warning('Cannot open graph result; file is unavailable: %s', path)
             QMessageBox.warning(self, "File not found",
                                 "This file no longer exists at the indexed location:\n" + path)
             return
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve()))):
+            log.warning('Desktop service could not open file: %s', path)
             QMessageBox.warning(self, "Could not open file", "Could not open:\n" + path)
 
     @staticmethod

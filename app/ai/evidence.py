@@ -1,14 +1,18 @@
 """Bounded, read-only evidence for organizer summaries, separate from search snippets."""
 from dataclasses import dataclass
 import html
+from html.parser import HTMLParser
+import logging
 from pathlib import Path
 import re
 import subprocess
 import unicodedata
 import zipfile
 
-from app.ai.content import _pdf_text, _slide_number
+from app.ai.content import _check_cancelled, _pdf_text, _slide_number
 from app.constants import READABLE_EXTENSIONS
+
+log = logging.getLogger(__name__)
 
 
 def compact(text):
@@ -27,20 +31,67 @@ class ContentEvidence:
     limitation: str = ""
 
 
+class _HTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {'script', 'style'}:
+            self.hidden += 1
+
+    def handle_endtag(self, tag):
+        if tag in {'script', 'style'} and self.hidden:
+            self.hidden -= 1
+        elif tag in {'p', 'div', 'tr', 'li', 'h1', 'h2', 'h3', 'section', 'article'} and not self.hidden:
+            self.parts.append('\n')
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def literal_passages(source, width=140, count=16):
+    """Finite support choices copied from evidence, including Unicode verbatim.
+
+    Constraining quote outputs to these passages prevents transport/copy mistakes
+    from rejecting an otherwise sound judgment. Relevance still needs semantic
+    matching and independent review; a literal passage alone is not approval.
+    """
+    source = compact(source)
+    passages, start = [], 0
+    while start < len(source) and len(passages) < count:
+        end = min(len(source), start+width)
+        if end < len(source):
+            boundary = source.rfind(' ', start+width//2, end)
+            if boundary > start:
+                end = boundary
+        value = source[start:end].strip()
+        if value:
+            passages.append(value)
+        start = end
+        while start < len(source) and source[start].isspace():
+            start += 1
+    return list(dict.fromkeys(passages))
+
+
 def _xml_text(archive, member, budget):
     with archive.open(member) as stream:
         xml = stream.read(budget).decode("utf-8", "replace")
     # Keep adjacent cells/paragraphs from merging into invented words.
+    xml = re.sub(r'</(?:\w+:)?(?:p|row|tr)>', '\n', xml)
     return html.unescape(re.sub(r"<[^>]+>", " ", xml))
 
 
-def extract_evidence(entry, read_limit=32768):
+def extract_evidence(entry, read_limit=32768, *, cancelled=None):
     """Never download placeholders, execute files, or interpret instructions in them.
 
     Callers check file eligibility and identity before and after this operation.
     PDFs sample three pages; Office XML reads are bounded even in compressed files.
     Archive member names are explicitly weaker evidence than document contents.
     """
+    _check_cancelled(cancelled)
     limit = max(0, min(int(read_limit), 256 * 1024))
     if not limit:
         return ContentEvidence("disabled", limitation="Content reading is disabled; filename only")
@@ -51,7 +102,7 @@ def extract_evidence(entry, read_limit=32768):
     status = "content"
     try:
         if extension == ".pdf":
-            text = _pdf_text(path, pages=3)
+            text = _pdf_text(path, pages=3, cancelled=cancelled)
             limitation = "First three PDF pages only; no OCR"
         elif extension in {".docx", ".pptx", ".xlsx", ".odt", ".ods", ".odp"}:
             budget = min(512 * 1024, max(32768, limit * 8))
@@ -69,6 +120,7 @@ def extract_evidence(entry, read_limit=32768):
                 chunks = []
                 remaining = budget
                 for member in members[:60]:
+                    _check_cancelled(cancelled)
                     size = min(archive.getinfo(member).file_size, remaining)
                     chunks.append(_xml_text(archive, member, size))
                     remaining -= size
@@ -92,13 +144,22 @@ def extract_evidence(entry, read_limit=32768):
             text = raw.decode(encoding, "replace")
             if "\x00" in text or text.count("\ufffd") > max(2, len(text) // 100):
                 return ContentEvidence("unreadable", limitation="Text encoding could not be read reliably")
+            if extension in {'.html', '.htm'}:
+                parser = _HTMLText()
+                parser.feed(text)
+                text = ' '.join(parser.parts)
             limitation = f"First {limit:,} bytes only"
         else:
             return ContentEvidence("unsupported", limitation="No content reader for this format; filename only")
+    except InterruptedError:
+        raise
     except (OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile,
             NotImplementedError, subprocess.SubprocessError):
+        log.warning('Could not read file content: %s', path, exc_info=True)
         return ContentEvidence("unreadable", limitation="Content could not be read; filename only")
-    text = compact(text)
+    # Preserve explicit field/paragraph boundaries for identity extraction.
+    # Quote validation separately normalizes whitespace with compact().
+    text = '\n'.join(compact(line) for line in text.splitlines() if line.strip())
     if extension == ".pdf" and "onenote" in text.casefold():
         # Handwritten OneNote exports can expose only dates, URLs and a generic
         # homework heading. Those headers do not mean the page body was readable.
