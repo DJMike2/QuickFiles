@@ -14,8 +14,6 @@ class ModelManager:
         self.search_settings = data["search"]
         self.model_info = data["model"]
         self.model_path = models_dir / self.model_info["filename"]
-        self.testing_model_info = data["testing_model"]
-        self.testing_model_path = models_dir / self.testing_model_info["filename"]
         self.embedding_model_info = data["embedding_model"]
         self.embedding_model_path = models_dir / self.embedding_model_info["filename"]
         self.vision_model_info = data["vision_model"]
