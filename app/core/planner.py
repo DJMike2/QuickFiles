@@ -1,5 +1,6 @@
 """Steps 6–9: destination evidence, shared groups, assignment and independent review."""
 from collections import Counter, defaultdict
+from copy import deepcopy
 from dataclasses import asdict
 import logging
 from pathlib import Path, PurePosixPath
@@ -101,13 +102,21 @@ class Planner:
                 if value is None:
                     raise ValueError('Not cached')
                 found[row['id']] = Profile.from_result(value, row['evidence'])
-                cache.put_profile(key, value)
             except (ValueError, TypeError, KeyError, AttributeError):
                 pending.append((row, key))
+        described = {}
         for offset in range(len(pending)):
+            self._check_cancelled()
             # One item per semantic judgment: unrelated neighbours and filename
             # order must not change a document's identity or folder purpose.
             batch = pending[offset:offset+1]
+            row, key = batch[0]
+            if key in described:
+                # The production runtime remaps this one item's ID to 1. All
+                # remaining fields, model settings and prompt are in the key.
+                # Revalidate into a separate Profile: later course aliasing is mutable.
+                found[row['id']] = Profile.from_result(deepcopy(described[key]), row['evidence'])
+                continue
             self.progress_cb(f'Describing subjects and folder purposes… {offset+1}/{len(pending)}')
             values = self.runtime.profile_items([row for row, key in batch], self.progress_cb, self.cancelled)
             for (row, key), value in zip(batch, values):
@@ -127,6 +136,8 @@ class Planner:
                         value = fallback
                 found[row['id']] = profile
                 cache.put_profile(key, value)
+                if profile.scope_kind not in {'unknown', 'mixed'}:
+                    described[key] = value
         return found
 
     def _off_limits(self, path):
@@ -178,13 +189,17 @@ class Planner:
         by_parent = defaultdict(list)
         for entry in inventory.entries:
             by_parent[str(PurePosixPath(entry.rel_path).parent)].append(entry)
-        directories = set(inventory.directories)
-        for path in sorted(directories):
+        directories = sorted(set(inventory.directories))
+        by_directory = defaultdict(list)
+        for path in directories:
+            self._check_cancelled()
+            by_directory[str(PurePosixPath(path).parent)].append(path)
+        for path in directories:
             self._check_cancelled()
             if self._off_limits(path):
                 continue
             direct = by_parent[path]
-            children = sorted(p for p in directories if str(PurePosixPath(p).parent) == path)
+            children = by_directory[path]
             if not direct and children:
                 metadata[path] = {'container': True, 'children': children}
                 continue

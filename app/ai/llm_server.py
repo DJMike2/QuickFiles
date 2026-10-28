@@ -45,7 +45,8 @@ class LLMServer:
 
     @property
     def is_running(self):
-        return self._process is not None and self._process.poll() is None
+        process = self._process
+        return process is not None and process.poll() is None
 
     def start(self, status_cb=None, cancelled=None):
         if self.is_running:

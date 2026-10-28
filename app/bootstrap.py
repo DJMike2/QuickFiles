@@ -1,4 +1,7 @@
 """Construct the services used by the desktop window."""
+from contextlib import contextmanager
+
+from app.ai.activity import AIActivity
 from app.ai.binary_manager import BinaryManager
 from app.ai.hardware_probe import probe
 from app.ai.model_manager import ModelManager
@@ -20,9 +23,24 @@ class AppContext:
         self.runtime = AIRuntime(self.binary_manager, self.model_manager)
         self.embeddings = EmbeddingRuntime(self.binary_manager, self.model_manager)
         self.vision = VisionRuntime(self.binary_manager, self.model_manager, self.runtime)
+        self.ai_activity = AIActivity(self.runtime, self.embeddings, self.vision)
         self.search = FileSearch(config.app_data_dir / "search.sqlite3", self.runtime,
                                  self.embeddings, config.get("exclude_patterns"), vision=self.vision)
         self.journal = Journal(config.db_path)
+
+    @contextmanager
+    def ai_operation(self, kind, cancelled):
+        with self.ai_activity.operation():
+            if kind == 'scan':
+                self.runtime.prestart(cancelled)
+            try:
+                yield
+            except BaseException:
+                self.cancel_ai()
+                self.runtime.shutdown()
+                self.embeddings.shutdown()
+                self.vision.shutdown()
+                raise
 
     def cancel_ai(self):
         self.runtime.interrupt()
@@ -30,7 +48,11 @@ class AppContext:
         self.vision.interrupt()
 
     def shutdown(self):
-        self.runtime.shutdown()
-        self.embeddings.shutdown()
-        self.vision.shutdown()
+        activity = getattr(self, 'ai_activity', None)
+        if activity is not None:
+            activity.close()
+        else:
+            self.runtime.shutdown()
+            self.embeddings.shutdown()
+            self.vision.shutdown()
         self.journal.close()

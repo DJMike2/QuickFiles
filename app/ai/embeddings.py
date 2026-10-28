@@ -2,13 +2,24 @@
 import numpy as np
 
 from app.ai.llm_server import ContextTooLargeError, LLMServer, LLMServerError
+from app.ai.model_runtime import ModelRuntime
 
 
-class EmbeddingRuntime:
+class EmbeddingRuntime(ModelRuntime):
     def __init__(self, binary_manager, model_manager):
+        super().__init__()
         self.binary_manager = binary_manager
         self.model_manager = model_manager
-        self._server = None
+
+    def _new_server(self):
+        return LLMServer(self.binary_manager, self.model_manager.embedding_model_path,
+                         {'n_gpu_layers': 0, 'context_tokens': self.info['context_tokens'],
+                          'threads': 2, 'pooling': self.info['pooling']}, embedding=True)
+
+    def prestart(self, cancelled=None):
+        # Downloads stay in the normal indexing path, with its progress/errors.
+        if self.binary_manager.is_available and self.model_manager.embedding_downloaded:
+            return self._load_async(cancelled=cancelled)
 
     @property
     def info(self):
@@ -39,18 +50,13 @@ class EmbeddingRuntime:
         if not self.model_manager.embedding_downloaded and status_cb:
             status_cb('Downloading the small local search model…')
         self.model_manager.download_embedding(progress_cb, cancelled)
-        if self._server is None or not self._server.is_running:
-            self.shutdown()
-            self._server = LLMServer(self.binary_manager, self.model_manager.embedding_model_path,
-                                     {'n_gpu_layers': 0, 'context_tokens': self.info['context_tokens'],
-                                      'threads': 2, 'pooling': self.info['pooling']}, embedding=True)
-            self._server.start(status_cb, cancelled)
+        server = self._ensure_started(status_cb, cancelled)
 
         def encode(batch):
             if cancelled():
                 raise InterruptedError('Search stopped')
             try:
-                return self._server.embed(batch)
+                return server.embed(batch)
             except ContextTooLargeError:
                 if len(batch) > 1:
                     middle = len(batch) // 2
@@ -72,13 +78,3 @@ class EmbeddingRuntime:
         if (lengths <= 0).any():
             raise LLMServerError('The search model returned an empty vector')
         return vectors / lengths
-
-    def interrupt(self):
-        server = self._server
-        if server is not None:
-            server.interrupt()
-
-    def shutdown(self):
-        if self._server:
-            self._server.stop()
-        self._server = None

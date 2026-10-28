@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QFileSystemWatcher, Qt, QTimer
@@ -205,8 +206,10 @@ class MainWindow(QMainWindow):
         self.scan.style().unpolish(self.scan)
         self.scan.style().polish(self.scan)
         self.scan.setEnabled(not busy or scanning)
-        for widget in (self.path, self.browse, self.setup, self.settings, self.preview):
+        for widget in (self.path, self.browse, self.setup, self.settings):
             widget.setEnabled(not busy)
+        # Preview edits only change the pending plan; search never consumes it.
+        self.preview.setEnabled(self.worker is None)
         self.setup.setVisible(not self.ctx.runtime.available)
         self.search_panel.set_external_busy(self.worker is not None)
         self.backend.setText(f"  {self.ctx.runtime.backend_label}  ")
@@ -495,7 +498,10 @@ class MainWindow(QMainWindow):
 
         def work(status, progress, cancelled):
             try:
-                return operation(status, progress, cancelled)
+                activity = getattr(self.ctx, "ai_operation", None)
+                scope = activity(kind, cancelled) if activity and kind in {"scan", "watch"} else nullcontext()
+                with scope:
+                    return operation(status, progress, cancelled)
             finally:
                 self.ctx.journal.close()
 
@@ -587,7 +593,9 @@ class MainWindow(QMainWindow):
         self.search_panel.set_searching(True)
 
         def operation(status, progress, cancelled):
-            return self.ctx.search.search(root, query, status, progress, cancelled)
+            activity = getattr(self.ctx, "ai_operation", None)
+            with activity("search", cancelled) if activity else nullcontext():
+                return self.ctx.search.search(root, query, status, progress, cancelled)
 
         self.search_worker = Worker(operation, self)
         self.search_worker.status.connect(self.search_panel.set_status)
