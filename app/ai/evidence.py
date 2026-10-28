@@ -14,13 +14,19 @@ from app.constants import READABLE_EXTENSIONS
 
 log = logging.getLogger(__name__)
 
+# Cc controls occupy these two Unicode ranges. Preserve controls that Python
+# treats as whitespace (including U+001C–U+001F and U+0085), as before.
+_TEXT_TRANSLATION = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-",
+    **{chr(code): None for code in (*range(32), *range(127, 160))
+       if not chr(code).isspace()},
+})
+
 
 def compact(text):
     # Normalize PDF typography before quoting: curly apostrophes and ligatures
     # are not different factual evidence. Mathematical layout is not reconstructed.
-    text = unicodedata.normalize("NFKC", text).translate(str.maketrans(
-        {"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-"}))
-    text = "".join(char for char in text if char.isspace() or unicodedata.category(char) != "Cc")
+    text = unicodedata.normalize("NFKC", text).translate(_TEXT_TRANSLATION)
     return re.sub(r"\s+", " ", text).strip()
 
 
