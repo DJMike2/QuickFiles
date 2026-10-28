@@ -326,69 +326,7 @@ class PreviewPanel(QWidget):
         self.trees = []
         self.delegates = []
         for title, editable in (("Before", False), ("After", True)):
-            panel = QWidget()
-            column = QVBoxLayout(panel)
-            column.setContentsMargins(4, 4, 4, 2)
-            column.setSpacing(2)
-            header_row = QWidget()
-            header_row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-            header = QHBoxLayout(header_row)
-            header.setContentsMargins(0, 0, 0, 0)
-            header.setSpacing(6)
-            label = QLabel(title)
-            label.setStyleSheet("font-weight:600; font-size:13px;")
-            header.addWidget(label)
-            if editable:
-                self.badge = QLabel()
-                self.badge.hide()
-                header.addWidget(self.badge)
-                separator = QLabel("│")
-                separator.setStyleSheet("color:#888; font-size:11px;")
-                header.addWidget(separator)
-                self.legend = QLabel()
-                self.legend.setTextFormat(Qt.RichText)
-                self.legend.setStyleSheet("font-size:10px;")
-                self.legend.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-                header.addWidget(self.legend)
-                # The hint absorbs any shortage of width so the legend is never covered.
-                hint = QLabel("✏ Double-click: rename · Drag: move · Right-click: new folder")
-                hint.setStyleSheet("font-size:10px; color:#888; font-style:italic; margin-left:6px;")
-                hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-                header.addWidget(hint, 1)
-            else:
-                header.addStretch()
-            column.addWidget(header_row)
-            tree = _FolderTree()
-            tree.setHeaderHidden(True)
-            tree.setAnimated(True)
-            tree.setUniformRowHeights(True)
-            tree.setAlternatingRowColors(True)
-            tree.setMouseTracking(True)
-            # Folders open from the arrow only; double-click is reserved for renaming.
-            tree.setExpandsOnDoubleClick(False)
-            delegate = DiffItemDelegate(tree)
-            tree.setItemDelegate(delegate)
-            self.delegates.append(delegate)
-            tree.setEditTriggers(
-                QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed if editable
-                else QAbstractItemView.NoEditTriggers
-            )
-            model = DiffTreeModel(editable, tree)
-            model.rename = self._rename
-            tree.setModel(model)
-            if editable:
-                model.move_to = self._move
-                tree.file_menu = self._file_menu
-                tree.setDragEnabled(True)
-                tree.setAcceptDrops(True)
-                tree.setDropIndicatorShown(True)
-                tree.setDragDropMode(QAbstractItemView.DragDrop)
-                tree.setDefaultDropAction(Qt.MoveAction)
-            tree.selectionModel().currentChanged.connect(self._selected)
-            column.addWidget(tree)
-            trees.addWidget(panel)
-            self.models.append(model)
-            self.trees.append(tree)
+            self._build_tree(title, editable, trees)
         trees.setSizes([500, 500])
         details = QWidget()
         details.setMinimumWidth(190)
@@ -414,6 +352,71 @@ class PreviewPanel(QWidget):
         splitter.setStretchFactor(1, 0)
         self._refresh_legend()
         self._show_details(None)
+
+    def _build_tree(self, title, editable, splitter):
+        panel = QWidget()
+        column = QVBoxLayout(panel)
+        column.setContentsMargins(4, 4, 4, 2)
+        column.setSpacing(2)
+        header_row = QWidget()
+        header_row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        header = QHBoxLayout(header_row)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        label = QLabel(title)
+        label.setStyleSheet("font-weight:600; font-size:13px;")
+        header.addWidget(label)
+        if editable:
+            self.badge = QLabel()
+            self.badge.hide()
+            header.addWidget(self.badge)
+            separator = QLabel("│")
+            separator.setStyleSheet("color:#888; font-size:11px;")
+            header.addWidget(separator)
+            self.legend = QLabel()
+            self.legend.setTextFormat(Qt.RichText)
+            self.legend.setStyleSheet("font-size:10px;")
+            self.legend.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            header.addWidget(self.legend)
+            # The hint absorbs any shortage of width so the legend is never covered.
+            hint = QLabel("✏ Double-click: rename · Drag: move · Right-click: new folder")
+            hint.setStyleSheet("font-size:10px; color:#888; font-style:italic; margin-left:6px;")
+            hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            header.addWidget(hint, 1)
+        else:
+            header.addStretch()
+        column.addWidget(header_row)
+        tree = _FolderTree()
+        tree.setHeaderHidden(True)
+        tree.setAnimated(True)
+        tree.setUniformRowHeights(True)
+        tree.setAlternatingRowColors(True)
+        tree.setMouseTracking(True)
+        # Folders open from the arrow only; double-click is reserved for renaming.
+        tree.setExpandsOnDoubleClick(False)
+        delegate = DiffItemDelegate(tree)
+        tree.setItemDelegate(delegate)
+        self.delegates.append(delegate)
+        tree.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed if editable
+            else QAbstractItemView.NoEditTriggers
+        )
+        model = DiffTreeModel(editable, tree)
+        model.rename = self._rename
+        tree.setModel(model)
+        if editable:
+            model.move_to = self._move
+            tree.file_menu = self._file_menu
+            tree.setDragEnabled(True)
+            tree.setAcceptDrops(True)
+            tree.setDropIndicatorShown(True)
+            tree.setDragDropMode(QAbstractItemView.DragDrop)
+            tree.setDefaultDropAction(Qt.MoveAction)
+        tree.selectionModel().currentChanged.connect(self._selected)
+        column.addWidget(tree)
+        splitter.addWidget(panel)
+        self.models.append(model)
+        self.trees.append(tree)
 
     def clear(self):
         self.inventory = None
