@@ -387,6 +387,74 @@ class FileSearch:
                 'kind': ' '.join(file_kinds(path.suffix.lower())) or 'other',
                 'excerpt': row['text'][:REVIEW_EXCERPT]}
 
+    @staticmethod
+    def _rank_candidates(candidates, original, request, topic, queries):
+        ranked = []
+        vector = .75 * queries[0] + .25 * queries[1]
+        vector /= max(float(np.linalg.norm(vector)), 1e-12)
+        matrix = np.stack([np.frombuffer(row['vector'], dtype='<f4') for row in candidates])
+        scores = matrix @ vector
+        noise = GENERIC_WORDS | set(SEARCH_KINDS)
+        if request['extensions']:
+            # The format is already enforced; otherwise "cpp" may pick C++ out of all code.
+            noise |= {x.lstrip('.') for extensions in SEARCH_KINDS.values() for x in extensions}
+        terms = own_terms(original[:1000], noise)
+        own = [p for p in map(keyword_pattern, terms) if p]
+        named = [p for p in map(keyword_pattern, identifiers(terms)) if p]
+        expansions = own_terms(topic, noise) + [k for k in request.get('keywords', []) if k not in noise]
+        extra = [p for p in map(keyword_pattern, dict.fromkeys(expansions)) if p]
+        # Kind words ("photos", "img") describe the format, not what a photo shows.
+        kind_words = set().union(*SEARCH_KIND_WORDS.values())
+        topical = [p for term in dict.fromkeys(terms + expansions)
+                   if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
+                   and (p := keyword_pattern(term))]
+        typed = [p for term in terms if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
+                 and (p := keyword_pattern(term))]
+        eligible = np.ones(len(candidates), dtype=bool)
+        carries = np.zeros(len(candidates), dtype=bool)
+        titled = np.zeros(len(candidates), dtype=bool)
+        for index, row in enumerate(candidates):
+            path = Path(row['path'])
+            fields = ((readable(path.stem) + ' ' + path.suffix[1:]).casefold(),
+                      readable(path.parent.as_posix()).casefold(), row['text'].casefold())
+            own_hits = [sum(1 for p in own if p.search(field)) for field in fields]
+            extra_hits = [sum(1 for p in extra if p.search(field)) for field in fields]
+            # Hybrid ranking: meaning from the embedding plus exact keyword evidence in the
+            # name, folder and text, which catches abbreviations (HW6) a small encoder misreads.
+            for weight, mine, theirs in zip((.22, .10, .08), own_hits, extra_hits):
+                scores[index] += weight * (1. if mine else EXPANSION_WEIGHT if theirs else 0.)
+            scores[index] += .03 * min(sum(own_hits) + sum(extra_hits), 4)
+            # Matching more of the user's words in the name or folder means a closer match.
+            in_name = sum(1 for p in own if p.search(fields[0]) or p.search(fields[1]))
+            scores[index] += .12 * in_name / max(len(own), 1)
+            carries[index] = bool(named) and all(any(p.search(field) for field in fields) for p in named)
+            titled[index] = bool(typed) and all(p.search(fields[0]) or p.search(fields[1]) for p in typed)
+            # A file without readable text can only match through its name or folder.
+            if not row['text'].strip() and not any(p.search(fields[0]) or p.search(fields[1]) for p in topical):
+                eligible[index] = False
+        if carries.any():
+            eligible &= carries  # The request names it (stat 415, homework 2); others are other files.
+        floor = FILTERED_MATCH_SCORE if request.get('kinds') or request['extensions'] else MATCH_SCORE
+        threshold = max(floor, float(scores[eligible].max()) - RELATIVE_MARGIN) if eligible.any() else floor
+        for index in np.argsort(-scores):
+            if scores[index] < floor:
+                break
+            # A file named for everything the user typed ("resumes" -> X_Resume.pdf) is never an outlier.
+            if eligible[index] and (scores[index] >= threshold or titled[index]):
+                ranked.append((min(1., float(scores[index])), candidates[index]))
+        if ranked and not named:
+            # Files beside a match, in a folder named for the request (Travel/, Health/), go to the
+            # review too: "japan trip" also means the flight booking that never says Japan. Not when
+            # the request names a numbered item (stat 415): the rest of its folder is something else.
+            have = {row['path'] for _, row in ranked}
+            folders = {Path(row['path']).parent for _, row in ranked} - {Path('.')}
+            named_folders = {folder for folder in folders
+                             if any(p.search(readable(folder.as_posix()).casefold()) for p in topical)}
+            ranked += [(min(1., float(scores[i])), candidates[i]) for i in np.argsort(-scores)
+                       if eligible[i] and candidates[i]['path'] not in have
+                       and Path(candidates[i]['path']).parent in named_folders]
+        return ranked
+
     def _retrieve(self, root, original, request, rows, skipped, status, progress, cancelled):
         candidates = self._filtered(rows, request)
         # Keywords alone still name a subject ("python scripts" -> code files about python).
@@ -400,69 +468,7 @@ class FileSearch:
         elif candidates:
             status('Finding matching files…')
             queries = self.embeddings.embed([topic, original[:1000]], status, progress, cancelled, query=True)
-            vector = .75 * queries[0] + .25 * queries[1]
-            vector /= max(float(np.linalg.norm(vector)), 1e-12)
-            matrix = np.stack([np.frombuffer(row['vector'], dtype='<f4') for row in candidates])
-            scores = matrix @ vector
-            noise = GENERIC_WORDS | set(SEARCH_KINDS)
-            if request['extensions']:
-                # The format is already enforced; otherwise "cpp" may pick C++ out of all code.
-                noise |= {x.lstrip('.') for extensions in SEARCH_KINDS.values() for x in extensions}
-            terms = own_terms(original[:1000], noise)
-            own = [p for p in map(keyword_pattern, terms) if p]
-            named = [p for p in map(keyword_pattern, identifiers(terms)) if p]
-            expansions = own_terms(topic, noise) + [k for k in request.get('keywords', []) if k not in noise]
-            extra = [p for p in map(keyword_pattern, dict.fromkeys(expansions)) if p]
-            # Kind words ("photos", "img") describe the format, not what a photo shows.
-            kind_words = set().union(*SEARCH_KIND_WORDS.values())
-            topical = [p for term in dict.fromkeys(terms + expansions)
-                       if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
-                       and (p := keyword_pattern(term))]
-            typed = [p for term in terms if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
-                     and (p := keyword_pattern(term))]
-            eligible = np.ones(len(candidates), dtype=bool)
-            carries = np.zeros(len(candidates), dtype=bool)
-            titled = np.zeros(len(candidates), dtype=bool)
-            for index, row in enumerate(candidates):
-                path = Path(row['path'])
-                fields = ((readable(path.stem) + ' ' + path.suffix[1:]).casefold(),
-                          readable(path.parent.as_posix()).casefold(), row['text'].casefold())
-                own_hits = [sum(1 for p in own if p.search(field)) for field in fields]
-                extra_hits = [sum(1 for p in extra if p.search(field)) for field in fields]
-                # Hybrid ranking: meaning from the embedding plus exact keyword evidence in the
-                # name, folder and text, which catches abbreviations (HW6) a small encoder misreads.
-                for weight, mine, theirs in zip((.22, .10, .08), own_hits, extra_hits):
-                    scores[index] += weight * (1. if mine else EXPANSION_WEIGHT if theirs else 0.)
-                scores[index] += .03 * min(sum(own_hits) + sum(extra_hits), 4)
-                # Matching more of the user's words in the name or folder means a closer match.
-                in_name = sum(1 for p in own if p.search(fields[0]) or p.search(fields[1]))
-                scores[index] += .12 * in_name / max(len(own), 1)
-                carries[index] = bool(named) and all(any(p.search(field) for field in fields) for p in named)
-                titled[index] = bool(typed) and all(p.search(fields[0]) or p.search(fields[1]) for p in typed)
-                # A file without readable text can only match through its name or folder.
-                if not row['text'].strip() and not any(p.search(fields[0]) or p.search(fields[1]) for p in topical):
-                    eligible[index] = False
-            if carries.any():
-                eligible &= carries  # The request names it (stat 415, homework 2); others are other files.
-            floor = FILTERED_MATCH_SCORE if request.get('kinds') or request['extensions'] else MATCH_SCORE
-            threshold = max(floor, float(scores[eligible].max()) - RELATIVE_MARGIN) if eligible.any() else floor
-            for index in np.argsort(-scores):
-                if scores[index] < floor:
-                    break
-                # A file named for everything the user typed ("resumes" -> X_Resume.pdf) is never an outlier.
-                if eligible[index] and (scores[index] >= threshold or titled[index]):
-                    ranked.append((min(1., float(scores[index])), candidates[index]))
-            if ranked and not named:
-                # Files beside a match, in a folder named for the request (Travel/, Health/), go to the
-                # review too: "japan trip" also means the flight booking that never says Japan. Not when
-                # the request names a numbered item (stat 415): the rest of its folder is something else.
-                have = {row['path'] for _, row in ranked}
-                folders = {Path(row['path']).parent for _, row in ranked} - {Path('.')}
-                named_folders = {folder for folder in folders
-                                 if any(p.search(readable(folder.as_posix()).casefold()) for p in topical)}
-                ranked += [(min(1., float(scores[i])), candidates[i]) for i in np.argsort(-scores)
-                           if eligible[i] and candidates[i]['path'] not in have
-                           and Path(candidates[i]['path']).parent in named_folders]
+            ranked = self._rank_candidates(candidates, original, request, topic, queries)
         if request.get('sort', 'relevance') != 'relevance' or metadata_only:
             order = {'newest': lambda item: -item[1]['mtime_ns'], 'oldest': lambda item: item[1]['mtime_ns'],
                      'largest': lambda item: -item[1]['size'], 'smallest': lambda item: item[1]['size']}
