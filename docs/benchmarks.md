@@ -36,6 +36,28 @@ Filenames were shuffled with seed `2026102821`.
 
 These are checks on one small synthetic fixture, not an accuracy estimate for all folders.
 
+## Metadata inventory: 1,000,000 files
+
+| Measured scope | Native workers | Median | Observed range |
+| --- | ---: | ---: | ---: |
+| Native executable + buffered JSONL output | 1 | **11.171 s** | 10.110–14.838 s |
+| Native executable + buffered JSONL output | 4 | **5.221 s** | 5.187–10.266 s |
+| Complete Python app inventory, 1M file cap | 1 | **26.233 s** | 22.159–29.974 s |
+
+Three timed runs per row on **1,000 folders × 1,000 empty text files**.
+Every native run returned one million file records with zero errors or skips;
+every app run returned **1,000,000 unique inventory entries**.
+
+Native-only timing includes process startup, traversal, metadata, and buffered JSONL
+writing. The app timing also includes policy setup, parsing, inventory objects, and
+sorting. Neither includes file contents or AI. Fixture creation, output validation,
+and cleanup are outside the timers. Native output was checked after each run.
+
+One native warm-up per worker configuration preceded timing; OS caches were not
+flushed. The app run explicitly used `max_files=1_000_000`. Same machine as below;
+source [`db8cb4e`](https://github.com/DJMike2/QuickFiles/commit/db8cb4e).
+The generated million-file tree was removed after verification.
+
 ## Native inventory: 20,000 files
 
 | Native workers | Median | Observed range |
@@ -43,7 +65,7 @@ These are checks on one small synthetic fixture, not an accuracy estimate for al
 | **1** · Linux automatic default | **1.470 s** | 0.671–1.565 s |
 | **4** · explicit override | **1.450 s** | 0.756–1.462 s |
 
-Seven timed runs per configuration, randomized order, after one warm-up each.
+Seven timed runs per configuration, randomized order, after one warm-up each; `max_files=20000`.
 The generated tree contained 100 folders × 200 text files. All 20,000 files
 were returned in every run, with **zero skipped files and zero errors**.
 Timing includes process startup, policy checks, metadata parsing, and sorting.
