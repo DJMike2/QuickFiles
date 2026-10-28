@@ -14,6 +14,7 @@ from app.ai.runtime import SummaryGroundingError
 from app.constants import EXECUTABLE_EXTENSIONS, SHORTCUT_EXTENSIONS
 from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
 from app.core.file_kinds import KIND_LABELS, kind_of
+from app.core.file_state import identity
 from app.core.identities import literal_header_identity
 
 SUMMARY_VERSION = "organizer-literal-excerpts-v5"
@@ -146,7 +147,7 @@ class Preparation:
                 self.progress(f"Summarizing files… {number:,}/{len(entries):,}: {entry.filename}")
                 evidence = extract_evidence(entry, inventory.content_read_bytes, cancelled=self.cancelled)
                 after = path.stat()
-                if self._identity(before) != self._identity(after):
+                if identity(before) != identity(after):
                     result.held[entry.rel_path] = "File changed while reading; scan again"
                     continue
                 basis = evidence.status if evidence.status in {"content", "archive_listing"} else "filename"
@@ -156,7 +157,7 @@ class Preparation:
                     f"{KIND_LABELS.get(kind_of(entry), 'unknown')}")
                 key = hashlib.sha256(json.dumps([
                     SUMMARY_VERSION if basis != 'filename' else 'organizer-extractive-v4-metadata',
-                    str(root), entry.rel_path, self._identity(after),
+                    str(root), entry.rel_path, identity(after),
                     self.runtime.summary_cache_key, asdict(evidence), source,
                 ], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
                 summary = self.cache.get(key)
@@ -166,10 +167,10 @@ class Preparation:
                     # Preparation collects facts; semantic interpretation belongs
                     # to the profile/matching/review stages. Never hold readable
                     # content merely because a model failed to copy a substring.
-                    identity = literal_header_identity(evidence.text)
+                    header_identity = literal_header_identity(evidence.text)
                     excerpts = literal_excerpts(evidence.text)
                     summary = FileSummary(entry.rel_path, basis, evidence.status, ' … '.join(excerpts),
-                        identity or evidence.text[:96], [identity] if identity else [], excerpts,
+                        header_identity or evidence.text[:96], [header_identity] if header_identity else [], excerpts,
                         evidence.limitation + '; literal excerpts, not an inferred subject')
                     self.cache.put(key, summary)
                 elif basis in {'filename', 'archive_listing'} and kind_of(entry) in KIND_LABELS:
@@ -209,7 +210,7 @@ class Preparation:
                 self._check()
                 # Model calls may take seconds; exclude files altered in the meantime as well.
                 checked_path(root, entry.rel_path)
-                if self._identity(after) != self._identity(path.stat()):
+                if identity(after) != identity(path.stat()):
                     result.held[entry.rel_path] = "File changed during summarization; scan again"
                     continue
                 result.summaries[entry.rel_path] = summary
@@ -226,10 +227,6 @@ class Preparation:
                 result.held[entry.rel_path] = str(exc)
         self._check()
         return result
-
-    @staticmethod
-    def _identity(info):
-        return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
 
 
 def literal_excerpts(text, width=360):

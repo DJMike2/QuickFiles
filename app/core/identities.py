@@ -46,12 +46,7 @@ def same_scope(kind, left, right):
 
 
 def explicit_clients(text):
-    """Recipient fields take precedence over ambiguous descriptions of billed work.
-
-    ``Client: Example Studio. Invoice for translation services`` names one client.
-    A heading ``Invoice for Example Studio`` remains supported when no recipient
-    field exists, but lowercase service descriptions are not organization names.
-    """
+    # Prefer recipient fields; lowercase service descriptions are not client names.
     fields = re.findall(r'\b(?:client|customer|bill(?:ed)? to)\s*:\s*([^.;…\n]{3,70})', text, re.I)
     if not fields:
         fields = [match[1] for match in re.finditer(
@@ -60,13 +55,8 @@ def explicit_clients(text):
     return list(dict.fromkeys(compact(value) for value in fields))
 
 
-def explicit_client(text):
-    clients = explicit_clients(text)
-    return clients[0] if clients else ''
-
-
 def literal_header_identity(text):
-    """Only an explicit identity in a heading, not a course mentioned later in prose."""
+    # Later mentions do not establish which course or client owns the file.
     heading = compact(text)[:220]
     if re.match(r'(?:Client\s*:|Customer\s*:|Bill(?:ed)? to\s*:)\s*', heading, re.I):
         clients = explicit_clients(text)
