@@ -130,4 +130,4 @@ generated binaries are excluded from version control.
 
 ---
 
-[Organizer process](docs/organizer-process.md) · [License](LICENSE)
+[Organizer guide](docs/organizer-process.md) · [Benchmarks](docs/benchmarks.md) · [License](LICENSE)
