@@ -1,12 +1,14 @@
-<div align="center">
+<p align="center">
+  <img src="assets/QuickFiles-Banner-Compact.png" alt="QuickFiles Banner" width="100%">
+</p>
 
-# QuickFiles
+<div align="center">
 
 **Organize your files. Find what you need. Keep it local.**
 
-Windows & Linux · Local AI · Native C++ scanner
+Windows & Linux · Local AI · Native C++ Scanner
 
-[Get started](#get-started) · [How it works](#how-it-works) · [Development](#development)
+[Get Started](#get-started) · [How It Works](#how-it-works) · [Development](#development)
 
 </div>
 
