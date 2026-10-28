@@ -67,8 +67,15 @@ static std::string quote(const std::string& value) {
     std::string out = "\"";
     out.reserve(value.size() + 2);
     for (unsigned char c : value) {
-        if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
-        else if (c < 32) { out += "\\u00"; out += hex[c >> 4]; out += hex[c & 15]; }
+        if (c == '"' || c == '\\') {
+            out += '\\';
+            out += char(c);
+        }
+        else if (c < 32) {
+            out += "\\u00";
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
         else out += char(c);
     }
     return out + '"';
@@ -250,16 +257,25 @@ static bool list_directory(const Task& task, std::vector<Item>& items) {
     int copy = dup(task.dir);
     if (copy < 0) return false;
     DIR* directory = fdopendir(copy);
-    if (!directory) { close(copy); return false; }
+    if (!directory) {
+        close(copy);
+        return false;
+    }
     bool ok = true;
     for (;;) {
         errno = 0;
         dirent* entry = readdir(directory);
-        if (!entry) { if (errno) ok = false; break; }
+        if (!entry) {
+            if (errno) ok = false;
+            break;
+        }
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
         Item item;
         try { item.name = wide(entry->d_name); }
-        catch (const std::range_error&) { ++skipped; continue; }
+        catch (const std::range_error&) {
+            ++skipped;
+            continue;
+        }
         // Avoid metadata work for files that the policy already excludes.
         if (entry->d_type != DT_DIR && (excluded(item.name) || !valid_name(item.name) || protected_name(item.name))) {
             // Project detection still needs every child name, including hidden markers.
@@ -268,7 +284,10 @@ static bool list_directory(const Task& task, std::vector<Item>& items) {
             continue;
         }
         struct stat info{};
-        if (fstatat(task.dir, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) { ++errors; continue; }
+        if (fstatat(task.dir, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+            ++errors;
+            continue;
+        }
         item.directory = S_ISDIR(info.st_mode);
         item.link = S_ISLNK(info.st_mode);
         item.regular = S_ISREG(info.st_mode);
@@ -291,14 +310,18 @@ static Dir child_dir(Dir parent, const std::wstring& name) {
                  0x00000001 | 0x00000020 | 0x00200000) < 0) return invalid_dir;
     FILE_ATTRIBUTE_TAG_INFO info{};
     if (!GetFileInformationByHandleEx(child, FileAttributeTagInfo, &info, sizeof(info)) ||
-        (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) { close_dir(child); return invalid_dir; }
+        (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        close_dir(child);
+        return invalid_dir;
+    }
     return child;
 #else
     return openat(parent, utf8(name).c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
 #endif
 }
 static void directory_record(char type, const Task& task, std::string& buffer) {
-    buffer += "{\"t\":\""; buffer += type;
+    buffer += "{\"t\":\"";
+    buffer += type;
     buffer += "\",\"p\":" + quote(utf8(task.relative)) + "}\n";
 }
 static void process(const Task& task, std::string& buffer) {
@@ -307,7 +330,10 @@ static void process(const Task& task, std::string& buffer) {
     if (!ok) ++errors;
     if (!task.relative.empty()) {
         bool project = !ok || folded(task.relative.substr(task.relative.find_last_of(L'/') + 1)) == L"issetupprerequisites";
-        for (const auto& item : items) if (marker(item.name)) { project = true; break; }
+        for (const auto& item : items) if (marker(item.name)) {
+            project = true;
+            break;
+        }
         directory_record(project ? 'P' : 'D', task, buffer);
         if (project) return;
     } else if (!ok) throw std::runtime_error("Cannot read selected folder");
@@ -349,7 +375,8 @@ static void worker() {
             std::unique_lock<std::mutex> lock(queue_mutex);
             ready.wait(lock, [] { return !tasks.empty() || finished; });
             if (tasks.empty()) break;
-            task = std::move(tasks.front()); tasks.pop_front();
+            task = std::move(tasks.front());
+            tasks.pop_front();
         }
         try { process(task, buffer); }
         catch (const std::exception& exc) {
@@ -361,7 +388,10 @@ static void worker() {
         write_out(buffer);
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
-            if (--outstanding == 0) { finished = true; ready.notify_all(); }
+            if (--outstanding == 0) {
+                finished = true;
+                ready.notify_all();
+            }
         }
     }
 }
@@ -406,7 +436,8 @@ int main(int argc, char** argv) {
         std::vector<std::string> args(argv, argv + argc);
 #endif
         if (args.size() == 2 && args[1] == "--version") {
-            std::cout << "quickfiles-fastscan " << protocol << '\n'; return 0;
+            std::cout << "quickfiles-fastscan " << protocol << '\n';
+            return 0;
         }
         if (args.size() != 4) throw std::runtime_error("Usage: fastscan ROOT POLICY THREADS (0 = auto)");
         read_policy(args[2]);
@@ -434,7 +465,10 @@ int main(int argc, char** argv) {
         if (directory != invalid_dir) {
             FILE_ATTRIBUTE_TAG_INFO info{};
             if (!GetFileInformationByHandleEx(directory, FileAttributeTagInfo, &info, sizeof(info)) ||
-                (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) { close_dir(directory); directory = invalid_dir; }
+                (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                close_dir(directory);
+                directory = invalid_dir;
+            }
         }
 #else
         directory = open(args[1].c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
