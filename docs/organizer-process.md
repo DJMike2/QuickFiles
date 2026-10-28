@@ -90,6 +90,13 @@ rules or execute filesystem actions.
    new folders must still have at least two actual moves. Existing folders may
    receive one file. Validate paths, exclusions and collisions before preview.
 
+   Matching returns a short placement reason and a numbered passage choice.
+   Python restores the exact text from that same file and verifies grounding;
+   every normalized evidence passage remains available to the model. The preview
+   receives the actual quotation, not internal indices. This shortens generation
+   without changing subject profiling or destination discovery.
+
+
 This replaces the app's previous numeric batch assignment and leftover pass.
 The older runtime APIs remain for compatibility; the organizer uses the evidence
 catalog, compatible grouping and individual matching stages described above.
@@ -112,8 +119,9 @@ The next stage independently challenges the uncertain comparisons.
    heading does not prove ownership when the body describes an example, template
    or citation. Syntactic provenance is not supplied as a confidence signal to the
    reviewing model. Only root broad-kind destinations avoid semantic inference.
-   Split overflowing contexts with overlap. Retry an unsupported positive quote
-   once with a request for a short literal passage; missing, incomplete or still
+   Split overflowing contexts with overlap. Restore numbered supporting passages
+   from their own file, and retry an unsupported positive choice once with a
+   request for a valid passage number; missing, incomplete or still
    ungrounded review decisions hold the affected files. Recheck file identity and
    validate the complete map after inference. If rejection leaves fewer than two
    files for a new destination, drop that destination's moves. Existing folders
