@@ -1,199 +1,140 @@
+<div align="center">
+
 # QuickFiles
 
-A desktop file organizer powered by **Qwen3.5-4B Q6_K**, running locally through
-llama.cpp. Scan a folder, review the Before/After trees, then apply the proposed
-moves. Undo restores the most recent batch. The organizer never deletes files.
+**Organize your files. Find what you need. Keep it local.**
 
-Supports Windows and Linux only. Requires Python 3.10 or newer:
+Windows & Linux · Local AI · Native C++ scanner
 
-```sh
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Linux: source .venv/bin/activate
+[Get started](#get-started) · [How it works](#how-it-works) · [Development](#development)
+
+</div>
+
+---
+
+## What you can do
+
+| | Feature |
+| --- | --- |
+| **Organize** | Group loose files by related subjects, using readable contents before filenames. |
+| **Preview** | Compare Before/After trees, rename items, drag files, or move them into a new folder. |
+| **Search** | Describe what you need; browse matching files in an interactive graph. |
+| **Visual search** | Search images, video frames, and scanned PDFs when the optional vision model is installed. |
+| **Undo** | Restore the most recent batch, preserving files that have since changed or would conflict. |
+
+## Get started
+
+**Requirements:** Python 3.10+ and a C++17 compiler available in your terminal.
+
+| Platform | Compiler |
+| --- | --- |
+| Windows | MinGW-w64 with POSIX threads, such as MSYS2's mingw64 toolchain |
+| Linux | `g++` with static runtime libraries |
+
+Run these commands from the repository folder:
+
+<details open>
+<summary><strong>Linux</strong></summary>
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 python tools/build_scanner.py
-python -B -m app.main
+python -m app.main
 ```
 
-**Setup AI** installs the tested llama.cpp b11869 engine and the 4B Q6_K model
-(3.81 GB). Windows and Linux packages are supported. CUDA is optional on
-Windows/Linux. A CPU engine remains available when GPU
-startup fails. Downloads require internet; filenames and document excerpts stay
-on this computer during planning.
+</details>
 
-There is no organizer without an LLM. Missing engine/model files require setup;
-invalid catalog/group responses abort planning; unverifiable individual matches
-leave the affected file in place.
+<details>
+<summary><strong>Windows — Command Prompt</strong></summary>
 
-Planning uses the tested prompts and settings in `app/ai/prompts.py` and
-`models/settings.json`:
-
-- Thinking off; temperature 0.2, top_p 0.8, top_k 20, min_p 0, seed 42.
-- An 8,192-token context and four CPU threads. Evidence comparisons use temperature 0.
-- Only loose top-level files are candidates. Existing organized files stay put;
-  project/application folders are excluded from traversal and destinations.
-- Preparation reads bounded text/PDF/Office evidence and builds a grounded summary.
-  Literal course/client headings and known filename-only formats use direct evidence;
-  other summaries select passages through the local model. Python verifies the
-  passages. Content takes precedence over misleading filenames. Summaries retain
-  read limitations and reuse an identity/evidence/model-aware local cache.
-- Steps 6–8 describe existing destinations, find compatible shared subjects, and
-  match individual files with a reason and supporting quote. Explicit courses and
-  full client identities stay separate; suitable existing destinations take priority.
-- Independent review challenges semantic matches without seeing the first judge's
-  reasoning. Python rechecks identities, kinds, file changes and the complete map.
-  Rejected/ungrounded matches stay in place, and new singleton groups are pruned.
-- Apply preflights the displayed map and verifies every moved file with SHA-256.
-  New journal entries retain checksums; undo preserves changed or occupied files.
-- New folders need at least two actual assigned files. Unreadable files permit
-  broad grouping; uncertain subjects and changed files stay in place.
-
-The model does not supply confidence percentages. Relative paths, protected
-locations and destination collisions are validated before preview and again
-before applying. Double-click names in the After tree to edit a proposal, or drag them to move.
-Right-click a file and choose **Move to new folder…** to type a folder name; the file moves into
-that new folder beside it in the preview, and Apply creates the folder.
-
-The [ordered organizer process](docs/organizer-process.md) documents all ten implemented
-steps. [Completion results](metrics/organizer-completion.md) and the historical
-[steps 6–8 results](metrics/organizer-steps-6-8.md) separate placement
-quality from coverage and include real-directory previews and generated apply/undo
-checks. Use `python -B tools/audit_organizer.py /path/to/folder` for a read-only
-evidence report, or add `--preview` to inspect the independently reviewed proposals.
-
-Preferences, logs, engines, models and the SQLite undo journal live outside the
-source tree:
-
-- Windows: `%APPDATA%\DesktopOrganizerAI`
-- Linux: `~/.local/share/DesktopOrganizerAI`
-
-**Qwen3.5-9B Q6_K_L** is retained in that data directory's `models/` folder for
-development testing. Its pinned URL, size and hash are under `testing_model` in
-`models/settings.json`. The app and Setup AI use 4B; fresh installations do not
-download 9B automatically. Both selected models have been retained on this computer.
-GPU measurements were approximately 4.1 GiB for 4B and 7.3 GiB for 9B with the tested
-configuration. CPU-only performance on weak computers has not been measured.
-
-Development checks:
-
-```sh
-python -B -m unittest discover -s tests -p 'test_*.py'
-python -B tests/benchmark_scan.py "/path/to/folder"
-python -B tests/benchmark_scan.py "/path/to/folder" --threads 4 --repeat 3
-python -B tests/benchmark_organization.py "/path/to/folder"
-python -B tests/benchmark_organization.py "/path/to/folder" --testing-model --seed 1337
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install -r requirements.txt
+python tools\build_scanner.py
+python -m app.main
 ```
 
-The organization benchmark prints proposed Before/After paths and never applies
-them. Its elapsed time includes scanning, context extraction and model loading.
-`-B` avoids Python cache directories. Downloaded models, caches and generated
-build files are excluded from version control.
+</details>
 
-Recorded before/after performance and validation results are in
-[metrics/README.md](metrics/README.md). Those results reuse existing measurements;
-the older benchmarks were not rerun to produce the report.
+On first launch, choose **Setup AI** to download the local engine and **Qwen3.5-4B Q6_K** model (about 3.81 GB). CUDA acceleration is optional; a CPU engine is available if GPU startup fails. AI setup is required for organization.
 
-## Native file scanner
+> **Your files stay on your computer.** Internet is needed for engine and model downloads; planning, search, and cached file content stay local.
 
-Folder traversal runs in `app/core/native/fastscan_mt.cpp`, adapted from the
-supplied multithreaded scanner. Windows keeps its buffered NT directory queries
-and relative directory handles. Linux uses `readdir`, `fstatat` and `openat`.
-Python only converts the streamed metadata into the app's inventory. Scanning
-does not read file contents or require the AI engine.
+## How it works
 
-Build once before launching from source; rebuilding is required after changes to
-the C++ source. GCC with C++17 and POSIX threads is required. On Windows, use a
-MinGW-w64 POSIX-thread compiler in PATH (for example, MSYS2's mingw64 toolchain).
-On Linux, use g++ with its static runtime libraries installed.
+1. **Choose a folder and scan.** QuickFiles reads supported file contents and proposes related groups.
+2. **Review the preview.** Edit names, drag items, or right-click a file → **Move to new folder…**.
+3. **Apply when ready.** Files move only after you apply the preview. Use **Undo** to reverse the latest batch.
+
+### Built-in safeguards
+
+- Organizes loose files; existing folder contents and protected project/application folders stay in place.
+- Uncertain matches stay put. Unreadable contents allow broad grouping without invented subjects.
+- New groups need at least two assigned files. Paths, collisions, and file changes are checked before moving.
+- Moves are verified with SHA-256 and recorded for undo. The organizer never deletes files.
+
+### Find files with AI Search
+
+Open **AI Search**, select a folder, and describe the files you want. Search supports file-type, size, and date filters and never moves files.
+
+The first search downloads a small embedding model (about 46 MB). With the optional vision model, it can also describe images, sample video frames, and read the first page of scanned PDFs. Descriptions are cached; audio contents are not inspected.
+
+## Development
+
+<details>
+<summary><strong>Native scanner builds</strong></summary>
+
+Rebuild after changing the C++ source:
 
 ```sh
-# Build for the current platform:
 python tools/build_scanner.py
+```
 
-# Cross-compile Windows x64 from Linux using MinGW-w64:
+| Platform | Output |
+| --- | --- |
+| Windows | `app/core/native/bin/fastscan.exe` |
+| Linux | `app/core/native/bin/fastscan` — native ELF; no Wine required |
+
+Include the matching binary when distributing the app. Preserve Linux executable permissions.
+
+Cross-compile Windows x64 from Linux with MinGW-w64:
+
+```sh
 python tools/build_scanner.py --target windows --cxx x86_64-w64-mingw32-g++-posix
 ```
 
-Outputs are `app/core/native/bin/fastscan.exe` on Windows and
-`app/core/native/bin/fastscan` on Linux. Both link their runtimes statically;
-Windows needs no extra MinGW DLLs. The binaries built here are x64; build on the
-target architecture for other CPUs. Preserve Linux's executable permission when
-copying it. Distributions must include the corresponding binary at that path.
-The adapter resolves it independently of the working directory and reports a
-build instruction if it is missing. It never compiles during a scan.
+</details>
 
-The Linux binary is a native ELF executable: it runs directly, with no Wine or
-Windows compatibility layer. The app selects it automatically on Linux. To
-check it directly from the repository root:
+<details>
+<summary><strong>Tests and read-only previews</strong></summary>
 
 ```sh
-./app/core/native/bin/fastscan --version
+python -B -m unittest discover -s tests -p "test_*.py"
+python -B tests/benchmark_scan.py "/path/to/folder" --threads 4 --repeat 3
+python -B tools/audit_organizer.py "/path/to/folder" --preview
 ```
 
-For a complete scan, use the app or `python -B tests/benchmark_scan.py "/path/to/folder"`.
-The executable's scan arguments include an internal policy file supplied by the
-Python adapter. Wine was used only during development on Linux to check the
-separate Windows `.exe`; neither app installation nor Linux scanning requires it.
+The audit previews proposals without moving files. Models, caches, and generated binaries are excluded from version control.
 
-The scanner prunes hidden/excluded folders, protected locations, links and
-project/application folders before descending. It skips protected filenames,
-Windows system/cloud-only files and nonregular files. Root-level project markers
-do not prevent scanning a folder explicitly selected by the user. Native output
-is buffered JSONL with a version header and completion summary; failures or
-truncated output abort the scan. Cancellation terminates and reaps the process.
-Parallel results are sorted before planning so file IDs and file limits stay
-consistent.
+</details>
 
-Windows automatically uses up to four workers for detected SSDs, and one for
-HDDs or unknown storage. Linux defaults to one worker for unknown storage.
-`--threads 4` in the scan benchmark overrides that choice. Benchmark timings
-include process startup, native traversal and Python inventory conversion;
-`--repeat` runs each complete scan again. The workflow in
-`.github/workflows/scanner.yml` builds and tests Windows and Linux separately and
-uploads Windows ZIP and Linux tar.gz artifacts (the tar preserves executable
-permissions). Generated binaries are ignored by git.
+<details>
+<summary><strong>Settings and local data</strong></summary>
 
-## AI Search
+Model defaults: [`models/settings.json`](models/settings.json). Prompts: [`app/ai/prompts.py`](app/ai/prompts.py).
 
-Open **AI Search**, choose its search folder, and describe the files you want.
-The local Qwen model turns the request into a concise query and explicit filters.
-A small All-MiniLM-L6-v2 embedding model retrieves files by meaning. Filename
-terms also help preserve exact identifiers: when a request names a numbered item
-(STAT 415, homework 2) and some files carry it, only those are shown. Clear outliers
-far below the best match, and media files whose name and folder share no word with
-the request, are left out. Files beside a match in a folder named for the request
-(Travel, Health) are considered too, so "japan trip" also reaches the flight booking
-that never says Japan. Qwen then reviews the top 10 matches against the request
-as typed, answering only with the IDs of the files that fit (usually under a second);
-requests that only name a type, size, date or order skip this review. If the review
-fails, the unreviewed matches are shown. The text model drafts several tokens at a time
-with its built-in multi-token-prediction layers (`"speculative": "draft-mtp"` in
-`models/settings.json`), which makes its answers about 1.6x faster; remove the
-setting for a model without those layers. Results appear in the graph; the
-conversation panel reports the actual number shown and how many indexed files
-were searched. Counts come from the files kept, never from model text.
-History restores the original query, answer and result graph during this session.
+Preferences, logs, downloaded models, search caches, and the undo journal are stored outside the repository:
 
-Search is read-only and has its own folder selection. It does not call organizer
-Scan, Apply or Undo. Project source files can be searched; hidden files, links,
-dependency/build folders and protected system locations are skipped. Existing safety rules
-and drag-and-drop support remain in the organizer.
+| Platform | Location |
+| --- | --- |
+| Windows | `%APPDATA%\DesktopOrganizerAI` |
+| Linux | `~/.local/share/DesktopOrganizerAI` |
 
-The first search downloads a verified 46 MB embedding GGUF when needed. It runs
-on the existing native CPU engine. NumPy handles vector comparisons; no PyTorch
-or separate vector database is used. Embeddings and short excerpts are cached
-in `search.sqlite3` in application data. Unchanged files reuse their vectors;
-changed, added and deleted files are refreshed on later searches.
+</details>
 
-Search uses filenames, paths and bounded text excerpts, with an English embedding
-model. When the vision model (Qwen3-VL) is installed, photos and screenshots,
-videos (four frames spread across the clip) and PDFs without a text layer (the
-first page, typed or handwritten) are described once while indexing, so they can be
-found by what they show and by the text in them. This takes a few seconds per new
-file; descriptions are cached until the file changes. The search model is unloaded
-while descriptions are written, because both models do not fit together on an 8 GB
-GPU. Audio is not inspected, and HEIC or camera RAW photos remain name-only.
-Pillow, pypdfium2 and PyAV (bundled FFmpeg) read the images, scans and video frames.
-It supports explicit file-type and exclusion filters, size limits and date filters.
-Messages summarize actual retrieval results; multi-turn conversational reasoning
-is not part of this version. All inference and indexed content stay local.
+---
+
+[Organizer process](docs/organizer-process.md) · [Recorded benchmarks](metrics/README.md) · [License](LICENSE)
