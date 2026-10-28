@@ -206,8 +206,10 @@ class MainWindow(QMainWindow):
         self.scan.style().unpolish(self.scan)
         self.scan.style().polish(self.scan)
         self.scan.setEnabled(not busy or scanning)
-        for widget in (self.path, self.browse, self.setup, self.settings, self.preview):
+        for widget in (self.path, self.browse, self.setup, self.settings):
             widget.setEnabled(not busy)
+        # Preview edits only change the pending plan; search never consumes it.
+        self.preview.setEnabled(self.worker is None)
         self.setup.setVisible(not self.ctx.runtime.available)
         self.search_panel.set_external_busy(self.worker is not None)
         self.backend.setText(f"  {self.ctx.runtime.backend_label}  ")
