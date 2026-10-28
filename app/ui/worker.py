@@ -5,6 +5,15 @@ import threading
 from PySide6.QtCore import QThread, Signal
 
 
+def _public_error(exc):
+    """Keep raw diagnostics in logs; show only messages users can act on."""
+    if isinstance(exc, PermissionError):
+        return "Couldn't access this location. Check its permissions and try again."
+    if isinstance(exc, FileNotFoundError):
+        return "A required file or folder is unavailable. Check the location and try again."
+    return "Couldn't complete this request. Please try again."
+
+
 class Worker(QThread):
     status = Signal(str)
     progress = Signal(object)
@@ -31,4 +40,4 @@ class Worker(QThread):
             self.stopped = True
         except Exception as exc:
             logging.getLogger(__name__).exception("Background operation failed")
-            self.error = str(exc)
+            self.error = _public_error(exc)

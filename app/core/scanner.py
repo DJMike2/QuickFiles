@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import fnmatch
 import heapq
 import json
+import logging
 import os
 from pathlib import Path
 import queue
@@ -30,6 +31,7 @@ PROJECT_MARKERS = {".git", "package.json", "manifest.json", "pyproject.toml", "r
                    "GameAssembly.dll", "gameassembly.dll", "resources.pak",
                    "unins000.exe", "Uninstall.exe", "uninstall.exe", "SupportPackages"}
 NATIVE_DIR = Path(__file__).resolve().parent / "native"
+log = logging.getLogger(__name__)
 
 
 def _entry_order(entry):
@@ -230,6 +232,11 @@ class Scanner:
                         raise OSError(f"Native scanner failed ({process.returncode}): {message}")
                     if pending or not header or not summary:
                         raise OSError("Native scanner returned an incomplete inventory")
+                    if inventory.error_count:
+                        diagnostics.seek(0)
+                        detail = diagnostics.read(8192).decode("utf-8", errors="replace").strip()
+                        log.warning('Scan completed with %d errors in %s%s', inventory.error_count,
+                                    self.root, f': {detail}' if detail else '')
                 finally:
                     stop.set()
                     if process.poll() is None:

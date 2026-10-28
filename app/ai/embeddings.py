@@ -24,6 +24,13 @@ class EmbeddingRuntime:
 
     def embed(self, texts, status_cb=None, progress_cb=None, cancelled=None, *, query=False):
         """Search encoders are trained with different prefixes for queries and documents."""
+        try:
+            return self._embed(texts, status_cb, progress_cb, cancelled, query=query)
+        except InterruptedError:
+            self.shutdown()
+            raise
+
+    def _embed(self, texts, status_cb, progress_cb, cancelled, *, query):
         cancelled = cancelled or (lambda: False)
         if cancelled():
             raise InterruptedError('Search stopped')
@@ -65,6 +72,11 @@ class EmbeddingRuntime:
         if (lengths <= 0).any():
             raise LLMServerError('The search model returned an empty vector')
         return vectors / lengths
+
+    def interrupt(self):
+        server = self._server
+        if server is not None:
+            server.interrupt()
 
     def shutdown(self):
         if self._server:

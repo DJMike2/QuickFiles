@@ -1,28 +1,64 @@
 """Read small local text excerpts for the LLM; never execute document contents."""
 import html
+import logging
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 import zipfile
 
 from app.constants import READABLE_EXTENSIONS
 
+log = logging.getLogger(__name__)
 
-def _pdf_text(path, pages=1):
+
+def _check_cancelled(cancelled):
+    if cancelled and cancelled():
+        raise InterruptedError('File reading stopped')
+
+
+def _pdf_text(path, pages=1, *, cancelled=None):
+    _check_cancelled(cancelled)
     if shutil.which("pdftotext"):
-        result = subprocess.run(
-            ["pdftotext", "-f", "1", "-l", str(pages), "-nopgbrk", str(path), "-"],
-            capture_output=True, timeout=4 * pages,
-        )
+        command = ["pdftotext", "-f", "1", "-l", str(pages), "-nopgbrk", str(path), "-"]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 4 * pages
+            while True:
+                _check_cancelled(cancelled)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, 4 * pages)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+            result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+        if result.returncode:
+            log.warning('PDF reader failed for %s (exit %s): %s', path, result.returncode,
+                        result.stderr[:2048].decode('utf-8', 'replace').strip())
         return result.stdout[:12000 * pages].decode("utf-8", "replace")
     # Portable fallback for computers without Poppler. Large PDFs stay filename-only.
     if path.stat().st_size <= 50 * 1024 * 1024:
         try:
             from pypdf import PdfReader
             reader = PdfReader(path, strict=False)
-            return " ".join(page.extract_text() or "" for page in reader.pages[:pages])[:12000 * pages]
+            chunks = []
+            for page in reader.pages[:pages]:
+                _check_cancelled(cancelled)
+                chunks.append(page.extract_text() or "")
+            _check_cancelled(cancelled)
+            return " ".join(chunks)[:12000 * pages]
+        except InterruptedError:
+            raise
         except Exception:
+            log.warning('PDF reader failed for %s', path, exc_info=True)
             return ""  # Encrypted, malformed and image-only PDFs need no guessed content.
     return ""
 
@@ -32,8 +68,9 @@ def _slide_number(name):
     return int(match[1]) if match else 0
 
 
-def read_content(entry, read_limit=1200, *, max_chars=180, detailed=False):
+def read_content(entry, read_limit=1200, *, max_chars=180, detailed=False, cancelled=None):
     """detailed=True (search) reads a few PDF pages, every slide and more archive entries."""
+    _check_cancelled(cancelled)
     if read_limit <= 0:
         return ""
     path = Path(entry.abs_path)
@@ -41,7 +78,7 @@ def read_content(entry, read_limit=1200, *, max_chars=180, detailed=False):
     text = ""
     try:
         if extension == ".pdf":
-            text = _pdf_text(path, 3 if detailed else 1)
+            text = _pdf_text(path, 3 if detailed else 1, cancelled=cancelled)
         elif extension == ".pptx" and detailed:
             with zipfile.ZipFile(path) as archive:
                 slides = sorted((name for name in archive.namelist()
@@ -63,6 +100,8 @@ def read_content(entry, read_limit=1200, *, max_chars=180, detailed=False):
         elif extension in READABLE_EXTENSIONS:
             with path.open("rb") as stream:
                 text = stream.read(min(read_limit, max(1200, max_chars * 3))).decode("utf-8", "replace")
+    except InterruptedError:
+        raise
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError):
-        pass
+        log.warning('Could not read file content: %s', path, exc_info=True)
     return re.sub(r"\s+", " ", text).strip()[:max_chars]

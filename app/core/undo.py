@@ -1,10 +1,13 @@
 """Reverse successful journal entries, retaining conflicts for a later retry."""
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 
 from app.core.blocked_paths import checked_path, enforce_project_boundary, resolve_safe
 from app.core.executor import safe_move
 from app.core.file_state import file_hash, identity
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,6 +40,7 @@ class UndoEngine:
                 self.journal.mark_op_undone(operation.id)
                 result.reversed_ok += 1
             except (OSError, RuntimeError, ValueError) as exc:
+                log.warning('Undo failed for %s -> %s', operation.dst_abs, operation.src_abs, exc_info=True)
                 result.skipped += 1
                 result.errors.append(str(exc))
         if not result.skipped:

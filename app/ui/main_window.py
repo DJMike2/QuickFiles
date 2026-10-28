@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QFileSystemWatcher, Qt, QTimer
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QButtonGroup, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget, QStyle,
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
@@ -46,7 +46,6 @@ class MainWindow(QMainWindow):
         self.inventory = None
         self._job_kind = ""
         self._close_pending = False
-        self._quit = False
         self._opened_at = time.time()
         self._seen_names = set()
         self._pending_sizes = {}
@@ -229,7 +228,7 @@ class MainWindow(QMainWindow):
             self._watcher.removePaths(self._watcher.directories())
         self._arrival_timer.stop()
         self._pending_sizes.clear()
-        if not self._watching():
+        if self._close_pending or not self._watching():
             self._tray.hide()
             return
         root = self._watch_root()
@@ -257,10 +256,12 @@ class MainWindow(QMainWindow):
             self._note_present(root)
 
     def _schedule_arrivals(self, _path=""):
-        if self._watching():
+        if not self._close_pending and self._watching():
             self._arrival_timer.start()
 
     def _check_arrivals(self):
+        if self._close_pending:
+            return
         if not self._watching() or self.worker or self.search_worker:
             if self._watching():
                 self._arrival_timer.start()
@@ -368,7 +369,6 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _quit_from_tray(self):
-        self._quit = True
         self.close()
 
     def _tray_activated(self, reason):
@@ -408,6 +408,7 @@ class MainWindow(QMainWindow):
             return
         if self.worker:
             self.worker.cancel()
+            self.ctx.cancel_ai()
             self.scan.setEnabled(False)
             self.status.setText("Stopping…")
             return
@@ -598,6 +599,7 @@ class MainWindow(QMainWindow):
     def _cancel_search(self):
         if self.search_worker:
             self.search_worker.cancel()
+            self.ctx.cancel_ai()
             self.search_panel.cancel_button.setEnabled(False)
             self.search_panel.set_status("Stopping search…")
 
@@ -618,6 +620,9 @@ class MainWindow(QMainWindow):
 
     def _setup(self):
         FirstRunDialog(self.ctx, self).exec()
+        if self._close_pending:
+            self.close()
+            return
         self._invalidate()
         self._buttons()
 
@@ -634,6 +639,8 @@ class MainWindow(QMainWindow):
         self._buttons()
 
     def show_first_run_if_needed(self):
+        if self._close_pending:
+            return
         if not self.ctx.runtime.available:
             if self.ctx.hardware.os_warning:
                 self._show_banner(self.ctx.hardware.os_warning)
@@ -641,19 +648,25 @@ class MainWindow(QMainWindow):
                 self._setup()
 
     def closeEvent(self, event):
-        if self._watching() and not self._quit and self._tray.isVisible():
+        # Closing the window exits, even when folder watching is enabled.
+        self._close_pending = True
+        self._arm_watch()
+        installing = False
+        for dialog in self.findChildren(QDialog):
+            if dialog.isVisible():
+                dialog.reject()
+            if isinstance(dialog, FirstRunDialog) and dialog.worker is not None:
+                installing = True
+        if installing:
+            # _setup resumes and closes this window after the install stops.
             event.ignore()
-            self.hide()
-            if not self.worker and not self.search_worker:
-                self.ctx.runtime.shutdown()
-                self._buttons()
             return
         if self.worker or self.search_worker:
-            self._close_pending = True
             if self.worker:
                 self.worker.cancel()
             if self.search_worker:
                 self._cancel_search()
+            self.ctx.cancel_ai()
             self.status.setText("Finishing the current operation before closing…")
             event.ignore()
             return

@@ -1,6 +1,6 @@
 """Independent semantic review followed by whole-plan deterministic checks."""
 from collections import Counter, defaultdict
-from dataclasses import asdict
+import logging
 from pathlib import Path
 import re
 
@@ -9,6 +9,8 @@ from app.core.blocked_paths import checked_path
 from app.core.file_state import identity
 from app.core.organization import scope_compatible, scope_matches
 from app.core.validator import Validator
+
+log = logging.getLogger(__name__)
 
 
 class Reviewer:
@@ -34,7 +36,7 @@ class Reviewer:
         groups = defaultdict(list)
         for action in plan.actions:
             groups[action.category].append(action)
-        existing = [{'path': path, 'profile': asdict(d['profile'])}
+        existing = [{'path': path, 'profile': d['profile'].evidence_dict()}
                     for path, d in destinations.items() if d['existing']]
         for path, actions in groups.items():
             self._check()
@@ -51,8 +53,11 @@ class Reviewer:
             elif not scope_compatible(scoped):
                 decisions = {by_source[a.src_rel]['id']: {'verdict': 'hold',
                     'reason': 'Destination mixes incompatible explicit identities'} for a in actions}
-            elif target['profile'].scope_kind in {'course', 'client', 'project', 'kind'}:
-                # The planner's type/identity boundaries have no probabilistic ambiguity.
+            elif not any(scope_matches(p,target['profile']) for p in profiles):
+                decisions = {by_source[a.src_rel]['id']: {'verdict':'hold',
+                    'reason':'Destination does not match the supplied identities'} for a in actions}
+            elif target['profile'].scope_kind == 'kind' and '/' not in path:
+                # Root broad-kind destinations add no subject/ownership claim.
                 decisions = {by_source[a.src_rel]['id']: {'verdict': 'keep',
                     'reason': 'Rechecked explicit identity or broad file kind'} for a in actions}
             else:
@@ -60,7 +65,7 @@ class Reviewer:
                 files = [{k: row[k] for k in ('id', 'kind', 'basis', 'evidence')}
                          for row in (by_source[a.src_rel] for a in actions)]
                 decisions = self.runtime.review_destination(files, {'path': path, 'existing': target['existing'],
-                    'profile': asdict(target['profile']), 'samples': target.get('source', '')[:2400]},
+                    'profile': target['profile'].evidence_dict(), 'samples': target.get('source', '')[:2400]},
                     existing, self.progress, self.cancelled)
             for action in actions:
                 self._check()
@@ -78,20 +83,22 @@ class Reviewer:
         plan.actions = retained
         self._check()
         # Recheck after inference, not just before it. Retain the preview identity for apply.
-        unchanged = []
+        unchanged, safety_holds = [], {}
         for action in plan.actions:
             try:
                 if action.source_identity != identity(checked_path(root, action.src_rel).stat()):
-                    raise ValueError('File changed during independent review')
+                    raise ValueError('File changed while preparing the preview; scan again')
                 unchanged.append(action)
             except (OSError, ValueError) as exc:
                 audit[action.src_rel] = {'verdict': 'hold', 'reason': str(exc)}
+                safety_holds[action.src_rel] = str(exc)
         plan.actions = unchanged
         report = Validator(root, allow_suffix_on_collision=self.allow_suffix_on_collision,
             shortcuts_movable=self.shortcuts_movable, executables_movable=self.executables_movable).validate_plan(plan)
         plan.actions, plan.warnings = report.valid_actions, report.warnings
         for action, reason in report.rejected_actions:
             audit[action.src_rel] = {'verdict': 'hold', 'reason': reason}
+            safety_holds[action.src_rel] = reason
         counts = Counter(action.category for action in plan.actions)
         final = []
         for action in plan.actions:
@@ -102,7 +109,9 @@ class Reviewer:
         plan.actions = final
         held = {source: d['reason'] for source, d in audit.items() if d['verdict'] != 'keep'}
         for source, reason in held.items():
-            plan.warnings.append(PlanWarning('', f'Kept {source}: {reason}'))
+            log.debug('Left %r unchanged after review: %s', source, reason)
+            if source in safety_holds:
+                plan.warnings.append(PlanWarning('', f'Kept {source}: {safety_holds[source]}'))
         for number, action in enumerate(plan.actions, 1):
             action.id = str(number)
         self._check()

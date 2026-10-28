@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass, field
 from contextlib import closing
 import hashlib
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import stat
@@ -15,7 +16,8 @@ from app.core.blocked_paths import checked_path, resolve_safe, validate_root_sel
 from app.core.file_kinds import KIND_LABELS, kind_of
 from app.core.identities import literal_header_identity
 
-SUMMARY_VERSION = "organizer-extractive-v3"
+SUMMARY_VERSION = "organizer-literal-excerpts-v5"
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,6 +105,12 @@ class Preparation:
         if self.cache.path and resolve_safe(self.cache.path).is_relative_to(root):
             raise ValueError("Summary cache must be outside the folder being organized")
         result = PreparedInventory(str(root))
+        if any((root/marker).is_dir() for marker in ('.git','.hg','.svn')) or (root/'.git').is_file():
+            # Selecting the repository itself must preserve the same boundary as
+            # encountering it below Downloads/Desktop. A lone downloaded manifest
+            # is deliberately not enough to classify an entire selected folder.
+            result.held = {e.rel_path:'Selected repository contents stay in place' for e in inventory.entries}
+            return result
         protected = [path.casefold() for path in inventory.protected_projects]
         entries = sorted(inventory.entries, key=lambda entry: entry.rel_path)
         for number, entry in enumerate(entries, 1):
@@ -136,7 +144,7 @@ class Preparation:
                     result.held[entry.rel_path] = "Inventory path does not match the selected folder"
                     continue
                 self.progress(f"Summarizing files… {number:,}/{len(entries):,}: {entry.filename}")
-                evidence = extract_evidence(entry, inventory.content_read_bytes)
+                evidence = extract_evidence(entry, inventory.content_read_bytes, cancelled=self.cancelled)
                 after = path.stat()
                 if self._identity(before) != self._identity(after):
                     result.held[entry.rel_path] = "File changed while reading; scan again"
@@ -154,20 +162,23 @@ class Preparation:
                 summary = self.cache.get(key)
                 if summary:
                     result.cache_hits += 1
-                elif basis == 'content' and literal_header_identity(evidence.text):
-                    # Explicit course/client headings are already reliable facts.
-                    # A literal excerpt cannot invent a topic or fail to copy its own quote.
+                elif basis == 'content':
+                    # Preparation collects facts; semantic interpretation belongs
+                    # to the profile/matching/review stages. Never hold readable
+                    # content merely because a model failed to copy a substring.
                     identity = literal_header_identity(evidence.text)
-                    excerpts = [evidence.text[i:i+140] for i in range(0, min(420, len(evidence.text)), 140)]
+                    excerpts = literal_excerpts(evidence.text)
                     summary = FileSummary(entry.rel_path, basis, evidence.status, ' … '.join(excerpts),
-                        identity, [identity], excerpts, evidence.limitation + '; literal identity heading and text excerpt')
+                        identity or evidence.text[:96], [identity] if identity else [], excerpts,
+                        evidence.limitation + '; literal excerpts, not an inferred subject')
                     self.cache.put(key, summary)
-                elif basis == 'filename' and kind_of(entry) in KIND_LABELS:
+                elif basis in {'filename', 'archive_listing'} and kind_of(entry) in KIND_LABELS:
                     # The extension already proves a broad format category. Asking a
                     # model to restate it adds no evidence about unread contents.
                     label = KIND_LABELS[kind_of(entry)]
                     summary = FileSummary(entry.rel_path, basis, evidence.status,
-                        f'Filename: {entry.filename}; kind from extension: {label}', label, [],
+                        (f'Filename: {entry.filename}; kind from extension: {label}'
+                         + ('; '+source[:600] if basis == 'archive_listing' else '')), label, [],
                         [entry.filename], evidence.limitation)
                     self.cache.put(key, summary)
                 else:
@@ -206,7 +217,10 @@ class Preparation:
                     result.held[entry.rel_path] = "Insufficient subject evidence; leave in place"
                     continue
                 result.files.append(entry)
+            except InterruptedError:
+                raise
             except OSError as exc:
+                log.warning('File unavailable while preparing scan: %s', entry.rel_path, exc_info=True)
                 result.held[entry.rel_path] = f"File unavailable: {exc.__class__.__name__}"
             except ValueError as exc:
                 result.held[entry.rel_path] = str(exc)
@@ -216,3 +230,11 @@ class Preparation:
     @staticmethod
     def _identity(info):
         return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+
+
+def literal_excerpts(text, width=360):
+    """Bounded, exact head/middle/tail passages; no generated factual claims."""
+    if len(text) <= width * 3:
+        return [text[i:i+width] for i in range(0, len(text), width)]
+    starts = [0, (len(text)-width)//2, len(text)-width]
+    return [text[start:start+width] for start in starts]

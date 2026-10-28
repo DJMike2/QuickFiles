@@ -9,7 +9,8 @@
     "min_p": 0,
     "seed": 42,
     "batch_size": 20,
-    "threads": 4
+    "threads": 4,
+    "speculative": "draft-mtp"
   },
   "search": {
     "temperature": 0,
