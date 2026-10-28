@@ -84,7 +84,7 @@ class ReviewContracts(unittest.TestCase):
             data = json.loads(user);requests.append(data)
             if len(requests)==1:raise ContextTooLargeError('large')
             return json.dumps({'coherent': True, 'reuse_existing': '', 'decisions': {
-                str(f['id']): {'verdict': 'keep', 'reason': 'Recipe', 'evidence': f['evidence']}
+                str(f['id']): {'verdict': 'keep', 'reason': 'Recipe', 'evidence': 1}
                 for f in data['files']}})
         with patch.object(self.runtime, '_generate', side_effect=generate):
             r = self.runtime.review_destination(files, self.destination, [])
