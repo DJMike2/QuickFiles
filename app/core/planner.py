@@ -311,34 +311,36 @@ class Planner:
         if row['kind'] in {'audio', 'image', 'video', 'ai model', 'disk image', 'archive', 'code'} and row['basis'] != 'content':
             if folder_kind(target.topic) == row['kind'] and destination['families'] == {row['kind']}:
                 return True
-            if row['basis'] != 'content':
-                words = {w for w in re.findall(r'\w+', (path + ' ' + target.topic).casefold())
-                         if len(w) >= 4 and w not in {'files', 'documents', 'notes'}}
-                return any(word in row['name'].casefold() for word in words)
-            return row['kind'] in destination['families']
+            words = {word for word in re.findall(r'\w+', (path + ' ' + target.topic).casefold())
+                     if len(word) >= 4 and word not in {'files', 'documents', 'notes'}}
+            return any(word in row['name'].casefold() for word in words)
         return not destination['families'] or bool(destination['families'] & {'document', 'spreadsheet', 'presentation', 'code', 'unknown'})
 
     @staticmethod
     def _partition_rows(rows):
         partitions = []
         for row in rows:
-            p = row['profile']
-            if p.scope_kind in {'unknown', 'mixed'}:
+            profile = row['profile']
+            if profile.scope_kind in {'unknown', 'mixed'}:
                 continue
-            scoped = p.scope_kind in {'course', 'client', 'project'}
-            family = ('scoped' if scoped else 'unreadable_documents'
-                      if row['basis'] != 'content' and row['kind'] in {'document', 'spreadsheet', 'presentation'}
-                      else row['kind'] if row['basis'] != 'content' and row['kind'] in KIND_FOLDERS else 'documents')
-            signature = (p.scope_kind, tuple(p.scope))
+            if profile.scope_kind in {'course', 'client', 'project'}:
+                family = 'scoped'
+            elif row['basis'] != 'content' and row['kind'] in {'document', 'spreadsheet', 'presentation'}:
+                family = 'unreadable_documents'
+            elif row['basis'] != 'content' and row['kind'] in KIND_FOLDERS:
+                family = row['kind']
+            else:
+                family = 'documents'
+            signature = (profile.scope_kind, tuple(profile.scope))
             for group in partitions:
                 # Compatibility depends only on scope kind and scope values.
                 # Repeating identical scopes cannot change its all-pairs verdict.
-                if group['family'] == family and scope_compatible([*group['scopes'].values(), p]):
+                if group['family'] == family and scope_compatible([*group['scopes'].values(), profile]):
                     group['rows'].append(row)
-                    group['scopes'].setdefault(signature, p)
+                    group['scopes'].setdefault(signature, profile)
                     break
             else:
-                partitions.append({'family': family, 'rows': [row], 'scopes': {signature: p}})
+                partitions.append({'family': family, 'rows': [row], 'scopes': {signature: profile}})
         return [{'family': group['family'], 'rows': group['rows']} for group in partitions]
 
     def _groups(self, rows):
@@ -384,40 +386,97 @@ class Planner:
                     profile = Profile('Loose ' + family + ' files', 'kind', [], family, '')
                     self._add_destination(KIND_FOLDERS[family], profile, ids, {family})
                 continue
-            offered = [{'id': r['id'], 'name': r['name'] if r['basis'] != 'content' else '',
-                        'profile': r['profile'].evidence_dict(), 'kind': r['kind'], 'evidence': r['evidence'][:1200]}
-                       for r in members]
-            # Unusable filing options can suppress real subjects during discovery.
-            existing = [{'path': p, 'profile': d['profile'].evidence_dict()}
-                        for p, d in self.destinations.items()
-                        if d['existing'] and any(self._compatible(row, p, d) for row in members)]
-            self.progress_cb('Finding shared subjects…')
-            proposals = self.runtime.propose_groups(offered, existing, self.progress_cb, self.cancelled)
-            for proposal in proposals:
-                try:
-                    path = self._group_path(proposal['path'])
-                except ValueError as exc:
-                    log.debug('Skipped suggested group %r: %s', proposal['path'], exc)
-                    continue
-                chosen = set(proposal['members'])
-                if len(chosen) < 2 or not chosen <= ids:
-                    log.debug('Skipped suggested group %r: fewer than two valid supporting members', proposal['path'])
-                    continue
-                included = [r for r in members if r['id'] in chosen]
-                if not scope_compatible([r['profile'] for r in included]):
-                    continue
-                profile = Profile(proposal['purpose'], 'topic', [], proposal['purpose'], '')
-                duplicate = next((path for path, dest in self.destinations.items() if not dest['existing']
-                    and dest['profile'].scope_kind == 'topic' and dest['families'] == {r['kind'] for r in included}
-                    and len(dest['members'] & chosen) >= min(len(chosen), len(dest['members'])) * .6), None)
-                try:
-                    if duplicate:
-                        self.destinations[duplicate]['members'].update(chosen)
-                    else:
-                        self._add_destination(path, profile, chosen, {r['kind'] for r in included},
-                            source='Original proposal: '+proposal['path'])
-                except ValueError as exc:
-                    log.debug('Skipped suggested group %r: %s', proposal['path'], exc)
+            self._add_subject_groups(members, ids)
+
+    def _add_subject_groups(self, members, ids):
+        offered = [{'id': r['id'], 'name': r['name'] if r['basis'] != 'content' else '',
+                    'profile': r['profile'].evidence_dict(), 'kind': r['kind'], 'evidence': r['evidence'][:1200]}
+                   for r in members]
+        # Unusable filing options can suppress real subjects during discovery.
+        existing = [{'path': p, 'profile': d['profile'].evidence_dict()}
+                    for p, d in self.destinations.items()
+                    if d['existing'] and any(self._compatible(row, p, d) for row in members)]
+        self.progress_cb('Finding shared subjects…')
+        proposals = self.runtime.propose_groups(offered, existing, self.progress_cb, self.cancelled)
+        for proposal in proposals:
+            try:
+                path = self._group_path(proposal['path'])
+            except ValueError as exc:
+                log.debug('Skipped suggested group %r: %s', proposal['path'], exc)
+                continue
+            chosen = set(proposal['members'])
+            if len(chosen) < 2 or not chosen <= ids:
+                log.debug('Skipped suggested group %r: fewer than two valid supporting members', proposal['path'])
+                continue
+            included = [r for r in members if r['id'] in chosen]
+            if not scope_compatible([r['profile'] for r in included]):
+                continue
+            profile = Profile(proposal['purpose'], 'topic', [], proposal['purpose'], '')
+            duplicate = next((path for path, dest in self.destinations.items() if not dest['existing']
+                and dest['profile'].scope_kind == 'topic' and dest['families'] == {r['kind'] for r in included}
+                and len(dest['members'] & chosen) >= min(len(chosen), len(dest['members'])) * .6), None)
+            try:
+                if duplicate:
+                    self.destinations[duplicate]['members'].update(chosen)
+                else:
+                    self._add_destination(path, profile, chosen, {r['kind'] for r in included},
+                        source='Original proposal: '+proposal['path'])
+            except ValueError as exc:
+                log.debug('Skipped suggested group %r: %s', proposal['path'], exc)
+
+    def _match_files(self, rows):
+        chosen = {}
+        for number, row in enumerate(rows, 1):
+            self._check_cancelled()
+            self.progress_cb(f'Matching files with evidence… {number}/{len(rows)}: {row["name"]}')
+            candidates = [(path, d) for path, d in self.destinations.items() if self._compatible(row, path, d)]
+            scoped_existing = [(path, d) for path, d in candidates if d['existing']
+                               and d['profile'].scope_kind in {'course', 'client', 'project'}]
+            scoped_candidates = [(path, d) for path, d in candidates
+                                 if d['profile'].scope_kind in {'course', 'client', 'project'}]
+            if scoped_existing:
+                candidates = scoped_existing
+            elif scoped_candidates:
+                candidates = scoped_candidates
+            if not candidates:
+                self.decisions[row['rel_path']] = {'folder': '', 'reason': 'No compatible destination'}
+                continue
+            existing_candidates = [(path, d) for path, d in candidates if d['existing']]
+            decision = None
+            if existing_candidates and len(existing_candidates) != len(candidates) and not scoped_existing:
+                decision = self.runtime.choose_destination(
+                    self._matching_file(row),
+                    [{'path': path, 'existing': True, 'profile': d['profile'].evidence_dict()}
+                     for path, d in existing_candidates], self.progress_cb, self.cancelled)
+                if decision['folder']:
+                    candidates = existing_candidates
+                else:
+                    decision = None
+            if decision is None:
+                if len(candidates) == 1 and candidates[0][1]['profile'].scope_kind in {'course', 'client', 'project', 'kind'}:
+                    path, destination = candidates[0]
+                    scope = ', '.join(destination['profile'].scope) or row['kind']
+                    decision = {'folder': path, 'reason': f'Matches explicit {destination["profile"].scope_kind} evidence: {scope}',
+                                'evidence': self._witness(row, destination), 'match': 'clear'}
+                else:
+                    decision = self.runtime.choose_destination(
+                        self._matching_file(row),
+                        [{'path': path, 'existing': d['existing'], 'profile': d['profile'].evidence_dict()}
+                         for path, d in candidates], self.progress_cb, self.cancelled)
+            if (not decision['folder'] and row['basis'] == 'filename'
+                    and row['profile'].scope_kind not in {'course', 'client', 'project'}):
+                broad = [(path, d) for path, d in candidates if d['profile'].scope_kind == 'kind']
+                preferred = [(path, d) for path, d in broad if d['existing']] or broad
+                if len(preferred) == 1:
+                    path, destination = preferred[0]
+                    decision = {'folder': path, 'reason': 'Contents unavailable; retain only the verified broad file kind',
+                                'evidence': self._witness(row, destination), 'match': 'clear'}
+            self.decisions[row['rel_path']] = decision
+            if decision['folder']:
+                if decision['folder'] not in {p for p, d in candidates}:
+                    raise LLMServerError('Destination escaped its evidence-compatible candidates')
+                chosen[row['rel_path']] = decision
+        return chosen
 
     def plan(self, inventory):
         if not self.runtime or not self.runtime.available:
@@ -473,58 +532,7 @@ class Planner:
                     profile.scope_kind = 'topic'
                 self._add_destination(path, profile, set(), families, existing=True, source=meta['source'])
             self._groups(rows)
-            chosen = {}
-            for number, row in enumerate(rows, 1):
-                self._check_cancelled()
-                self.progress_cb(f'Matching files with evidence… {number}/{len(rows)}: {row["name"]}')
-                candidates = [(path, d) for path, d in self.destinations.items() if self._compatible(row, path, d)]
-                scoped_existing = [(path, d) for path, d in candidates if d['existing']
-                                   and d['profile'].scope_kind in {'course', 'client', 'project'}]
-                scoped_candidates = [(path, d) for path, d in candidates
-                                     if d['profile'].scope_kind in {'course', 'client', 'project'}]
-                if scoped_existing:
-                    candidates = scoped_existing
-                elif scoped_candidates:
-                    candidates = scoped_candidates
-                if not candidates:
-                    self.decisions[row['rel_path']] = {'folder': '', 'reason': 'No compatible destination'}
-                    continue
-                existing_candidates = [(path, d) for path, d in candidates if d['existing']]
-                decision = None
-                if existing_candidates and len(existing_candidates) != len(candidates) and not scoped_existing:
-                    decision = self.runtime.choose_destination(
-                        self._matching_file(row),
-                        [{'path': path, 'existing': True, 'profile': d['profile'].evidence_dict()}
-                         for path, d in existing_candidates], self.progress_cb, self.cancelled)
-                    if decision['folder']:
-                        candidates = existing_candidates
-                    else:
-                        decision = None
-                if decision is not None:
-                    pass
-                elif len(candidates) == 1 and candidates[0][1]['profile'].scope_kind in {'course', 'client', 'project', 'kind'}:
-                    path, destination = candidates[0]
-                    scope = ', '.join(destination['profile'].scope) or row['kind']
-                    decision = {'folder': path, 'reason': f'Matches explicit {destination["profile"].scope_kind} evidence: {scope}',
-                                'evidence': self._witness(row, destination), 'match': 'clear'}
-                else:
-                    decision = self.runtime.choose_destination(
-                        self._matching_file(row),
-                        [{'path': path, 'existing': d['existing'], 'profile': d['profile'].evidence_dict()}
-                         for path, d in candidates], self.progress_cb, self.cancelled)
-                if (not decision['folder'] and row['basis'] == 'filename'
-                        and row['profile'].scope_kind not in {'course', 'client', 'project'}):
-                    broad = [(path, d) for path, d in candidates if d['profile'].scope_kind == 'kind']
-                    preferred = [(path, d) for path, d in broad if d['existing']] or broad
-                    if len(preferred) == 1:
-                        path, destination = preferred[0]
-                        decision = {'folder': path, 'reason': 'Contents unavailable; retain only the verified broad file kind',
-                                    'evidence': self._witness(row, destination), 'match': 'clear'}
-                self.decisions[row['rel_path']] = decision
-                if decision['folder']:
-                    if decision['folder'] not in {p for p, d in candidates}:
-                        raise LLMServerError('Destination escaped its evidence-compatible candidates')
-                    chosen[row['rel_path']] = decision
+            chosen = self._match_files(rows)
             by_target = defaultdict(list)
             for row in rows:
                 if row['rel_path'] in chosen:
