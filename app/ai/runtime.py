@@ -5,6 +5,7 @@ import logging
 import re
 
 from app.ai.llm_server import ContextTooLargeError, IncompleteResponseError, LLMServer, LLMServerError
+from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
 from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, FOLDER_PLAN_PROMPT,
                             LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
                             CATALOG_PROMPT, GROUPS_PROMPT, MATCH_PROMPT, REVIEW_PROMPT)
@@ -251,16 +252,19 @@ class AIRuntime:
             raise LLMServerError('The local model returned invalid shared groups') from exc
 
     def choose_destination(self, file, destinations, status_cb=None, cancelled=None):
-        from app.ai.evidence import compact, literal_passages
+        from app.ai.evidence import compact
+        passages = quote_choices(file['evidence'])
         paths = [row['path'] for row in destinations]
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {
             'folder': {'enum': ['', *paths]}, 'match': {'enum': ['clear', 'uncertain']},
-            'reason': {'type': 'string', 'maxLength': 240},
-            'evidence': {'enum': ['', *literal_passages(file['evidence'])]}},
+            'reason': {'type': 'string', 'maxLength': 80},
+            'evidence': {'enum': list(range(len(passages)))}},
             'required': ['folder', 'match', 'reason', 'evidence']}
         try:
-            raw = self._generate(MATCH_PROMPT, json.dumps({'file': file, 'destinations': destinations},
-                ensure_ascii=False), status_cb, cancelled, schema=schema, max_tokens=512, temperature=0)
+            raw = self._generate(MATCH_PROMPT, json.dumps({'file': {**{k: v for k, v in file.items() if k != 'evidence'},
+                'evidence': numbered_quotes(passages)}, 'destinations': destinations},
+                ensure_ascii=False, separators=(',', ':')), status_cb, cancelled,
+                schema=schema, max_tokens=512, temperature=0)
         except (ContextTooLargeError, IncompleteResponseError):
             if len(destinations) <= 1:
                 return {'folder': '', 'match': 'uncertain', 'reason': 'Evidence comparison did not complete', 'evidence': ''}
@@ -273,6 +277,9 @@ class AIRuntime:
             return {'folder': '', 'match': 'uncertain', 'reason': 'Multiple plausible destinations', 'evidence': ''}
         try:
             value = json.loads(raw)
+            if not isinstance(value, dict):
+                raise ValueError('Invalid destination decision')
+            value['evidence'] = restore_quote(value.get('evidence'), passages)
             if (value.get('folder') not in ['', *paths] or value.get('match') not in ['clear', 'uncertain']
                     or any(not isinstance(value.get(k), str) for k in ['reason', 'evidence'])):
                 raise ValueError('Invalid destination decision')
@@ -289,27 +296,30 @@ class AIRuntime:
         if not files:
             return {}
         keys = [str(i) for i in range(1, len(files) + 1)]
-        from app.ai.evidence import literal_passages
+        passages = [quote_choices(file['evidence']) for file in files]
         paths = [row['path'] for row in existing]
         item = {'type': 'object', 'additionalProperties': False, 'properties': {
-            'verdict': {'enum': ['keep', 'hold']}, 'reason': {'type': 'string', 'maxLength': 200},
+            'verdict': {'enum': ['keep', 'hold']}, 'reason': {'type': 'string', 'maxLength': 80},
             'evidence': {'type': 'string', 'maxLength': 140}},
             'required': ['verdict', 'reason', 'evidence']}
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {
             'coherent': {'type': 'boolean'}, 'reuse_existing': {'enum': ['', *paths]},
             'decisions': {'type': 'object', 'additionalProperties': False,
                           'properties': {key: {**item, 'properties':{**item['properties'],
-                              'evidence':{'enum':['', *literal_passages(file['evidence'])]}}}
-                              for key,file in zip(keys, files)}, 'required': keys}},
+                              'evidence':{'enum':list(range(len(options)))}}}
+                              for key,options in zip(keys, passages)}, 'required': keys}},
             'required': ['coherent', 'reuse_existing', 'decisions']}
         held = lambda reason: {f['id']: {'verdict': 'hold', 'reason': reason, 'evidence': ''} for f in files}
         try:
             raw = self._generate(REVIEW_PROMPT, json.dumps({'destination': destination,
                 'existing_destinations': existing,
-                'files': [{**row, 'id': i} for i, row in enumerate(files, 1)],
-                **({'feedback': 'A previous keep decision could not copy its supporting passage. '
-                    'For each keep, copy just ONE SHORT heading or phrase exactly from that file. '
-                    'Do not paraphrase or join passages.'} if not _retry else {})}, ensure_ascii=False),
+                'files': [{**{k: v for k, v in row.items() if k != 'evidence'},
+                           'id': i, 'evidence': numbered_quotes(options)}
+                          for i, (row, options) in enumerate(zip(files, passages), 1)],
+                **({'feedback': 'A previous keep lacked a valid supporting passage. '
+                    'For each keep, select one positive integer from THAT file numbered evidence. '
+                    'Use 0 for holds; never invent an index.'} if not _retry else {})},
+                ensure_ascii=False, separators=(',', ':')),
                 status_cb, cancelled, schema=schema, max_tokens=230 * len(files) + 128, temperature=0)
         except (ContextTooLargeError, IncompleteResponseError):
             if len(files) <= 2:
@@ -333,6 +343,9 @@ class AIRuntime:
             unsupported = []
             for key, file in zip(keys, files):
                 decision = decisions[key]
+                if isinstance(decision, dict):
+                    decision = {**decision, 'evidence': restore_quote(
+                        decision.get('evidence'), passages[int(key)-1])}
                 if (not isinstance(decision, dict) or decision.get('verdict') not in {'keep', 'hold'}
                         or any(not isinstance(decision.get(k), str) for k in ('reason', 'evidence'))):
                     raise ValueError('Invalid review decision')
