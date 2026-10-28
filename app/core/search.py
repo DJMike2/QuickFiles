@@ -171,6 +171,15 @@ class FileSearch:
             raise ValueError('Enter a search request of 1–12,000 characters')
         if not self.runtime.available:
             raise LLMServerError('Set up the local AI engine and Qwen model before searching')
+        preload = getattr(self.embeddings, 'prestart', None)
+        if preload:
+            preload(cancelled)
+        # New visual descriptions need the GPU first. When vision is available,
+        # decide which GPU model to start during indexing rather than loading both.
+        if self.vision is None or not self.vision.available:
+            preload = getattr(self.runtime, 'prestart', None)
+            if preload:
+                preload(cancelled)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         os.close(os.open(self.database_path, os.O_CREAT | os.O_RDWR, 0o600))
         # The index is updated first: describing new photos needs the GPU the search model uses.
@@ -230,73 +239,85 @@ class FileSearch:
         def excluded(name):
             return name.startswith('.') or any(fnmatch.fnmatch(name, p) for p in self.exclude_patterns)
 
-        for directory, directories, files in os.walk(root, followlinks=False):
-            check()
-            parent = Path(directory)
-            allowed = []
-            for name in sorted(directories):
-                if excluded(name) or name in SKIP_DIRECTORIES:
-                    continue
-                try:
-                    checked_read_path(root, (parent/name).relative_to(root).as_posix())
-                    allowed.append(name)
-                except (OSError, ValueError, RuntimeError):
-                    continue
-            directories[:] = allowed
-            for name in sorted(files):
+        try:
+            for directory, directories, files in os.walk(root, followlinks=False):
                 check()
-                if excluded(name):
-                    continue
-                try:
-                    relative = (parent/name).relative_to(root).as_posix()
-                    path = checked_read_path(root, relative)
-                    info = path.stat()
-                    if not stat.S_ISREG(info.st_mode):
+                parent = Path(directory)
+                allowed = []
+                for name in sorted(directories):
+                    if excluded(name) or name in SKIP_DIRECTORIES:
                         continue
-                    seen.add(relative)
-                    old = cached.get(relative)
-                    extension = path.suffix.lower()
-                    if (old and old['mtime_ns'] == info.st_mtime_ns and old['size'] == info.st_size
-                            and len(old['vector']) == self.embeddings.dimensions * 4
-                            and self._reusable(old, extension, vision, described)):
-                        current.append(old)
+                    try:
+                        checked_read_path(root, (parent/name).relative_to(root).as_posix())
+                        allowed.append(name)
+                    except (OSError, ValueError, RuntimeError):
                         continue
-                    entry = FileEntry(relative, name, extension, str(path), size_bytes=info.st_size)
-                    text = read_content(entry, 64 * 1024, max_chars=self.excerpt_chars, detailed=True,
-                                        cancelled=cancelled)
-                    row = {'path': relative, 'mtime_ns': info.st_mtime_ns, 'size': info.st_size, 'text': text}
-                    kind = vision and visual_kind(extension, text)
-                    if kind:
-                        visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
+                directories[:] = allowed
+                for name in sorted(files):
+                    check()
+                    if excluded(name):
                         continue
-                    pending.append({**row, 'document': self._document(relative, text)})
+                    try:
+                        relative = (parent/name).relative_to(root).as_posix()
+                        path = checked_read_path(root, relative)
+                        info = path.stat()
+                        if not stat.S_ISREG(info.st_mode):
+                            continue
+                        seen.add(relative)
+                        old = cached.get(relative)
+                        extension = path.suffix.lower()
+                        if (old and old['mtime_ns'] == info.st_mtime_ns and old['size'] == info.st_size
+                                and len(old['vector']) == self.embeddings.dimensions * 4
+                                and self._reusable(old, extension, vision, described)):
+                            current.append(old)
+                            continue
+                        entry = FileEntry(relative, name, extension, str(path), size_bytes=info.st_size)
+                        text = read_content(entry, 64 * 1024, max_chars=self.excerpt_chars, detailed=True,
+                                            cancelled=cancelled)
+                        row = {'path': relative, 'mtime_ns': info.st_mtime_ns, 'size': info.st_size, 'text': text}
+                        kind = vision and visual_kind(extension, text)
+                        if kind:
+                            if not visual:
+                                preload = getattr(vision, 'prestart', None)
+                                if preload:
+                                    preload(cancelled)
+                            visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
+                            continue
+                        pending.append({**row, 'document': self._document(relative, text)})
+                        if len(pending) == 8:
+                            flush()
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        if isinstance(exc, (LLMServerError, InterruptedError)):
+                            raise
+                        skipped += 1
+            if not visual:
+                preload = getattr(self.runtime, 'prestart', None)
+                if preload:
+                    preload(cancelled)
+            flush()
+            done = 0
+            try:
+                for row in visual:
+                    check()
+                    status(f'Describing photos, videos and scans… {done + 1:,}/{len(visual):,}')
+                    description = vision.describe(root / row['path'], row.pop('kind'), status, cancelled)
+                    pending.append({**row, 'text': description, 'encoder': described,
+                                    'document': self._document(row['path'], description)})
+                    done += 1
                     if len(pending) == 8:
                         flush()
-                except (OSError, ValueError, RuntimeError) as exc:
-                    if isinstance(exc, (LLMServerError, InterruptedError)):
-                        raise
-                    skipped += 1
-        flush()
-        done = 0
-        try:
-            for row in visual:
-                check()
-                status(f'Describing photos, videos and scans… {done + 1:,}/{len(visual):,}')
-                description = vision.describe(root / row['path'], row.pop('kind'), status, cancelled)
-                pending.append({**row, 'text': description, 'encoder': described,
-                                'document': self._document(row['path'], description)})
-                done += 1
-                if len(pending) == 8:
-                    flush()
-        except LLMServerError:
-            # Index the rest without descriptions; they are described on a later search.
-            log.warning('Vision model failed; indexing remaining media without descriptions', exc_info=True)
-            for row in visual[done:]:
-                row.pop('kind', None)
-                pending.append({**row, 'document': self._document(row['path'], row['text'])})
+            except LLMServerError:
+                # Index the rest without descriptions; they are described on a later search.
+                log.warning('Vision model failed; indexing remaining media without descriptions', exc_info=True)
+                for row in visual[done:]:
+                    row.pop('kind', None)
+                    pending.append({**row, 'document': self._document(row['path'], row['text'])})
         finally:
             if vision:
                 vision.shutdown()  # Free the GPU for the search model.
+        preload = getattr(self.runtime, 'prestart', None)
+        if preload:
+            preload(cancelled)
         flush()
         check()
         removed = set(cached) - seen

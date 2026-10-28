@@ -6,6 +6,7 @@ import re
 
 from app.ai import media
 from app.ai.llm_server import LLMServer, LLMServerError
+from app.ai.model_runtime import ModelRuntime
 from app.ai.prompts import VISION_PROMPTS
 
 log = logging.getLogger(__name__)
@@ -14,13 +15,27 @@ MAX_TOKENS = {'image': 90, 'video': 90, 'scan': 120}
 LABELS = {'image': 'Image', 'video': 'Video', 'scan': 'Scanned page'}
 
 
-class VisionRuntime:
+class VisionRuntime(ModelRuntime):
     def __init__(self, binary_manager, model_manager, runtime):
+        super().__init__()
         self.binary_manager = binary_manager
         self.model_manager = model_manager
         # The text model shares the GPU; it is unloaded while images are described.
         self.runtime = runtime
-        self._server = None
+
+    def _new_server(self):
+        manager = self.model_manager
+        return LLMServer(self.binary_manager, manager.vision_model_path,
+                         {**manager.runtime_settings, 'context_tokens': 4096},
+                         mmproj=manager.vision_mmproj_path)
+
+    def _before_start(self):
+        # Finish/cancel a pending text load before reserving the GPU for vision.
+        self.runtime.shutdown()
+
+    def prestart(self, cancelled=None):
+        if self.available:
+            return self._load_async(cancelled=cancelled)
 
     @property
     def available(self):
@@ -40,28 +55,11 @@ class VisionRuntime:
         if cancelled and cancelled():
             raise InterruptedError('Search stopped')
         try:
-            if self._server is None or not self._server.is_running:
-                self.shutdown()
-                self.runtime.shutdown()
-                manager = self.model_manager
-                self._server = LLMServer(self.binary_manager, manager.vision_model_path,
-                                         {**manager.runtime_settings, 'context_tokens': 4096},
-                                         mmproj=manager.vision_mmproj_path)
-                self._server.start(status_cb, cancelled)
-            raw = self._server.chat(VISION_PROMPTS[kind], 'Describe it.', MAX_TOKENS[kind], 0,
+            server = self._ensure_started(status_cb, cancelled)
+            raw = server.chat(VISION_PROMPTS[kind], 'Describe it.', MAX_TOKENS[kind], 0,
                                     images=[frame], allow_truncated=True)
         except (LLMServerError, InterruptedError):
             self.shutdown()
             raise
         text = re.sub(r'\s+', ' ', raw).strip()
         return f'{LABELS[kind]}: {text}' if text else ''
-
-    def interrupt(self):
-        server = self._server
-        if server is not None:
-            server.interrupt()
-
-    def shutdown(self):
-        if self._server:
-            self._server.stop()
-        self._server = None

@@ -5,6 +5,7 @@ import logging
 import re
 
 from app.ai.llm_server import ContextTooLargeError, IncompleteResponseError, LLMServer, LLMServerError
+from app.ai.model_runtime import ModelRuntime
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
 from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, FOLDER_PLAN_PROMPT,
                             LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
@@ -31,11 +32,19 @@ ASKS_FOR_ORDER = re.compile(r'\b(latest|newest|recent\w*|oldest|earliest|first|l
                             r'smallest|tiniest|big+\w*|large\w*|huge|small\w*|order|sort\w*)\b', re.I)
 
 
-class AIRuntime:
+class AIRuntime(ModelRuntime):
     def __init__(self, binary_manager, model_manager):
+        super().__init__()
         self.binary_manager = binary_manager
         self.model_manager = model_manager
-        self._server = None
+
+    def _new_server(self):
+        return LLMServer(self.binary_manager, self.model_manager.model_path,
+                         self.model_manager.runtime_settings)
+
+    def prestart(self, cancelled=None):
+        if self.available:
+            return self._load_async(cancelled=cancelled)
 
     @property
     def available(self):
@@ -43,8 +52,9 @@ class AIRuntime:
 
     @property
     def backend_label(self):
-        if self._server and self._server.is_running:
-            return f"Local AI ({self._server.backend.upper()})"
+        server = self._server
+        if server and server.is_running:
+            return f"Local AI ({server.backend.upper()})"
         return "Local AI ready" if self.available else "Local AI setup required"
 
     def _generate(self, system, user, status_cb=None, cancelled=None, *, max_tokens=None,
@@ -52,11 +62,8 @@ class AIRuntime:
         if cancelled and cancelled():
             raise InterruptedError("Planning stopped")
         settings = self.model_manager.runtime_settings
-        if self._server is None or not self._server.is_running:
-            self.shutdown()
-            self._server = LLMServer(self.binary_manager, self.model_manager.model_path, settings)
-            self._server.start(status_cb, cancelled)
-        raw = self._server.chat(system, user, max_tokens or settings["max_tokens"],
+        server = self._ensure_started(status_cb, cancelled)
+        raw = server.chat(system, user, max_tokens or settings["max_tokens"],
                                 settings["temperature"] if temperature is None else temperature,
                                 schema=schema, grammar=grammar)
         if cancelled and cancelled():
@@ -528,13 +535,3 @@ class AIRuntime:
         except (ValueError, TypeError) as exc:
             raise LLMServerError('The local model returned an invalid search review') from exc
         return {file['key'] for index, file in enumerate(files, 1) if index in listed}
-
-    def interrupt(self):
-        server = self._server
-        if server is not None:
-            server.interrupt()
-
-    def shutdown(self):
-        if self._server:
-            self._server.stop()
-        self._server = None
