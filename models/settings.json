@@ -26,13 +26,6 @@
     "sha256": "5a5bc7a3f9375b395e9f81fb69109038cf160c84606b8192f13cbb8355ca59f2",
     "min_ram_gb": 8
   },
-  "testing_model": {
-    "label": "Qwen3.5-9B Q6_K_L",
-    "filename": "Qwen_Qwen3.5-9B-Q6_K_L.gguf",
-    "url": "https://huggingface.co/bartowski/Qwen_Qwen3.5-9B-GGUF/resolve/182be2fd6c7bc44887d88a91cb03ff009cc9f549/Qwen_Qwen3.5-9B-Q6_K_L.gguf",
-    "size_bytes": 8451485728,
-    "sha256": "23a91e941634ce922058558cd6c055ed8440ba710daee57613b12a2da7356111"
-  },
   "vision_model": {
     "label": "Qwen3-VL-4B-Instruct Q4_K_S",
     "filename": "Qwen3-VL-4B-Instruct-Q4_K_S.gguf",
