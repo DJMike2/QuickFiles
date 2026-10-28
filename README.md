@@ -61,6 +61,8 @@ python -m app.main
 
 On first launch, choose **Setup AI** to download the local engine and **Qwen3.5-4B Q6_K** model (about 3.81 GB). CUDA acceleration is optional; a CPU engine is available if GPU startup fails. AI setup is required for organization.
 
+Models load when you scan or search, stay ready for follow-up work, and unload after five idle minutes. Opening the app alone does not load them.
+
 > **Your files stay on your computer.** Internet is needed for engine and model downloads; planning, search, and cached file content stay local.
 
 ## How it works

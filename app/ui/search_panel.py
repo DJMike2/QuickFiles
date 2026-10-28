@@ -31,6 +31,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
@@ -49,11 +50,13 @@ PANEL_COLORS = {
                faint="#8fa8ca", warn="#ffd060", input="#27364e", input_text="#ffffff",
                input_border="#607594", button="#324762", button_text="#f8fafc",
                button_border="#526b8a", button_hover="#405c7e", disabled="#8996a9",
+               disabled_input="#1d293b",
                prompt="#264b87", bubble="#26354b", bubble_text="#f1f5f9"),
     False: dict(panel="#ffffff", border="#d5dae1", text="#1a1a1a", sub="#5a6372", field="#3d4654",
                 faint="#7a828f", warn="#b7791f", input="#f7f8fa", input_text="#1a1a1a",
                 input_border="#b8c0cc", button="#f0f2f5", button_text="#1a1a1a",
                 button_border="#c4cad3", button_hover="#e4e8ee", disabled="#a0a6b0",
+                disabled_input="#eceff3",
                 prompt="#0066cc", bubble="#eef1f5", bubble_text="#1a1a1a"),
 }
 
@@ -67,12 +70,21 @@ QFrame#searchChatSidebar QLineEdit {{
     background: {input}; color: {input_text}; border: 1px solid {input_border};
     border-radius: 8px; padding: 8px;
 }}
+QFrame#searchChatSidebar QLineEdit:disabled {{
+    background: {disabled_input}; color: {disabled}; border-color: {border};
+}}
 QFrame#fileMetadataPanel QPushButton, QFrame#searchChatSidebar QPushButton {{
     background: {button}; color: {button_text}; border: 1px solid {button_border};
     border-radius: 8px; padding: 7px 9px;
 }}
 QFrame#fileMetadataPanel QPushButton:hover, QFrame#searchChatSidebar QPushButton:hover {{ background: {button_hover}; }}
 QFrame#fileMetadataPanel QPushButton:disabled, QFrame#searchChatSidebar QPushButton:disabled {{ color: {disabled}; }}
+QFrame#searchChatSidebar QPushButton#searchSendButton {{
+    background: #2563eb; color: white; border: none; font-weight: 600; padding: 8px 12px;
+}}
+QFrame#searchChatSidebar QPushButton#searchSendButton:disabled {{
+    background: {disabled_input}; color: {disabled}; border: 1px solid {border};
+}}
 QFrame QLabel#subText {{ color: {sub}; }}
 QFrame QLabel#fieldText {{ color: {field}; }}
 QFrame QLabel#faintText {{ color: {faint}; }}
@@ -258,11 +270,9 @@ class SearchPanel(QWidget):
         self.query.textChanged.connect(self._count_query)
         input_row.addWidget(self.query, 1)
         self.search_button = QPushButton("Send")
+        self.search_button.setObjectName("searchSendButton")
         self.search_button.setMinimumWidth(65)
         self.search_button.setMinimumHeight(38)
-        self.search_button.setStyleSheet(
-            "background:#2563eb; color:white; border:none; font-weight:600; padding:8px 12px;"
-        )
         self.search_button.clicked.connect(self._request_search)
         input_row.addWidget(self.search_button)
         self.cancel_button = QPushButton("Stop")
@@ -281,6 +291,9 @@ class SearchPanel(QWidget):
     def set_dark(self, dark: bool) -> None:
         self._colors = PANEL_COLORS[dark]
         self.setStyleSheet(PANEL_STYLE.format(**self._colors))
+        palette = self.query.palette()
+        palette.setColor(QPalette.Disabled, QPalette.PlaceholderText, QColor(self._colors['disabled']))
+        self.query.setPalette(palette)
         self.graph.set_dark(dark)
         self._count_query(self.query.text())
 

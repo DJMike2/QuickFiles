@@ -96,7 +96,6 @@ rules or execute filesystem actions.
    receives the actual quotation, not internal indices. This shortens generation
    without changing subject profiling or destination discovery.
 
-
 This replaces the app's previous numeric batch assignment and leftover pass.
 The older runtime APIs remain for compatibility; the organizer uses the evidence
 catalog, compatible grouping and individual matching stages described above.
@@ -109,8 +108,8 @@ The next stage independently challenges the uncertain comparisons.
    broad file kinds, changed sources, protected paths, collisions and final group
    sizes in Python. Reject new topic destinations whose names contain only dates
    and generic container words. For every semantic destination, including named
-   clients, projects and courses, make a separate local
-   model call using file evidence and destination purpose, without the original
+   clients, projects and courses, obtain an independent local
+   model judgment using file evidence and destination purpose, without the original
    assignment rationale. Require an individual keep/hold decision for every file,
    an exact supporting passage for each keep, and a coherent shared purpose for
    each new folder. A shared broad discipline cannot justify an unrelated narrower
@@ -149,6 +148,16 @@ actual moves only on generated fixtures and keeps personal directories read-only
 A filesystem operation and a SQLite commit are separate operations; pending
 journal entries after a crash remain available for inspection rather than being
 claimed as verified success. No crash-atomic transaction is promised.
+
+Within one loaded text-model session, exact repeat grouping proposals, grounded
+positive matches and fully supported independent keeps may reuse validated
+decisions in a bounded RAM cache. Complete inputs, their order, prompts, model
+and settings identify each entry; similarity is never sufficient. Holds, uncertain
+matches, failed responses and empty grouping proposals are not retained. New
+engine sessions and shutdown clear the cache. Every scan still collects evidence,
+checks source identity, rebuilds its plan and runs filesystem validation. Identical
+supported subject inputs within a scan also share one independent profile judgment;
+each file retains its own mutable profile and review decision.
 
 ## Reproducing evidence and placement evaluations
 
