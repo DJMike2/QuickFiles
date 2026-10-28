@@ -1,17 +1,5 @@
-"""Interactive semantic-search graph for an existing PySide6 file manager.
-
-The graph displays exactly one search at a time: query in the center,
-History above it, and up to ten highest-ranked file results surrounding it.
-No AI dependency: feed it a parsed JSON object from your search backend.
-
-`show_search_results()` receives a dictionary or JSON string containing
-`query`, optional `answer`, and a `results` list. Each result can provide
-`id`, `name`, `path`, `type`, and numeric `score` (0-1). Scores are used to
-rank the results but are never displayed as percentages. Hovering a file
-emits its original JSON record so the sidebar can display metadata. Unknown
-top-level keys, such as `_format_notes`, are ignored. This widget doesn't
-load a model, classify files, or organize anything on disk.
-"""
+# Display one search or its history as an interactive graph.
+# Click and hover signals pass file records to the enclosing panel.
 
 from __future__ import annotations
 
@@ -50,7 +38,6 @@ class _Connection(QGraphicsLineItem):
         self.refresh()
 
     def set_highlighted(self, hovered: bool) -> None:
-        """Light up the connecting line when either endpoint is hovered."""
         color = QColor("#9fdaff" if hovered else
                        ("#38bdf8" if self.related else "#3a597a"))
         pen = QPen(color, 3 if hovered else (1.5 if self.related else 2))
@@ -63,8 +50,6 @@ class _Connection(QGraphicsLineItem):
 
 
 class _Node(QGraphicsObject):
-    """Circular draggable node. The caller handles clicks and optional hover."""
-
     def __init__(self, title: str, detail: str, kind: str,
                  on_click: Callable[[], None], color: str = "#7dd3fc",
                  on_hover: Callable[[bool], None] | None = None):
@@ -79,10 +64,7 @@ class _Node(QGraphicsObject):
         self._press_pos: QPointF | None = None
         self._hovered = False
         if self.kind == "search":
-            # The central query describes the current graph; unlike the
-            # History node and file nodes, it has no action. Make it fully
-            # static so it doesn't misleadingly grow, highlight links,
-            # display a hand cursor, or drag when someone clicks it.
+            # The query node labels the graph and does not accept interaction.
             self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
             self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             self.setAcceptHoverEvents(False)
@@ -141,8 +123,7 @@ class _Node(QGraphicsObject):
         painter.setPen(QPen(border, 3 if self._hovered or is_center else 2))
         painter.drawEllipse(rect.adjusted(9, 9, -9, -9))
 
-        # Draw vector icons rather than font-dependent emojis. They work even
-        # on computers that don't have an emoji or icon-font package installed.
+        # Vector icons work without an installed emoji font.
         if self.kind == "file":
             self._paint_document_icon(painter)
         else:
@@ -170,7 +151,6 @@ class _Node(QGraphicsObject):
                          Qt.AlignmentFlag.AlignCenter, detail)
 
     def _paint_document_icon(self, painter: QPainter) -> None:
-        """Document-with-fold icon carrying a compact file-type label."""
         painter.setBrush(QColor("#243750"))
         painter.setPen(QPen(self.color, 1.8))
         painter.drawRoundedRect(QRectF(-15, -50, 30, 32), 4, 4)
@@ -260,7 +240,7 @@ class _GraphCanvas(QGraphicsView):
         event.accept()
 
     def _zoom_limits(self) -> tuple[float, float]:
-        """Closest zoom keeps every node on screen; farthest is 60% of the Fit view."""
+        # Closest zoom keeps all nodes visible; farthest is 60% of the fit view.
         view = self.viewport().rect()
         nodes = self.scene().itemsBoundingRect().adjusted(-12, -12, 12, 12)
         frame = self.sceneRect()
@@ -271,7 +251,7 @@ class _GraphCanvas(QGraphicsView):
         return min(fit, closest) * 0.6, closest
 
     def zoom(self, factor: float) -> None:
-        """Zoom around the cursor, never past the point where nodes leave the view."""
+        # Limit zoom so every node stays visible.
         current = self.transform().m11()
         farthest, closest = self._zoom_limits()
         target = max(farthest, min(closest, current * factor))
@@ -280,7 +260,6 @@ class _GraphCanvas(QGraphicsView):
             self.scale(target / current, target / current)
 
     def fit_graph(self) -> None:
-        """Reset zoom and pan to show every node with breathing room."""
         self._auto_fit = True
         self.resetTransform()
         if not self.sceneRect().isEmpty():
@@ -302,11 +281,7 @@ class _GraphCanvas(QGraphicsView):
 
 
 class SearchGraphWidget(QWidget):
-    """Embed this in any QLayout and call show_search_results(json_data).
-
-    file_clicked emits the file path before any attempt to open it. Set
-    open_files_on_click=False to handle file-opening in your parent UI instead.
-    """
+    # Disable open_files_on_click when the parent handles file opening.
 
     file_clicked = Signal(str)
     search_selected = Signal(str)
@@ -357,7 +332,6 @@ class SearchGraphWidget(QWidget):
         self._draw({"query": "Your search", "results": []})
 
     def set_dark(self, dark: bool) -> None:
-        """Only the canvas and its controls follow the theme; nodes keep their colors."""
         background, hint, text, fill, border, hover = (
             ("#0b1220", "#9bb2d1", "#dce9fa", "#23364e", "#40597c", "#345478") if dark else
             ("#dde2e9", "#5a6372", "#1a1a1a", "#ffffff", "#c4cad3", "#e4e8ee")
@@ -372,7 +346,7 @@ class SearchGraphWidget(QWidget):
         )
 
     def _cancel_transition(self) -> None:
-        """New backend results supersede any unfinished cosmetic animation."""
+        # New results supersede any unfinished transition.
         if self._active_animation is not None:
             self._active_animation.stop()
             self._active_animation.deleteLater()
@@ -381,11 +355,7 @@ class SearchGraphWidget(QWidget):
         self._canvas.setInteractive(True)
 
     def _animate_switch(self, render: Callable[[], None], notify: Callable[[], None]) -> None:
-        """Short fade/shrink then fade/expand when switching graph modes.
-
-        This is intentionally lightweight: the JSON and graph logic stay the
-        same, and only the existing graphics items' scale/opacity are changed.
-        """
+        # Fade out, rebuild the scene, then fade in.
         if self._transitioning:
             return
         self._transitioning = True
@@ -446,7 +416,7 @@ class SearchGraphWidget(QWidget):
         fade_out.start()
 
     def show_search_results(self, data: dict[str, Any] | str | bytes) -> None:
-        """Use for NEW searches. Adds results to in-memory history."""
+        # New searches add history; showing an older entry does not.
         if isinstance(data, (str, bytes)):
             data = json.loads(data)
         if not isinstance(data, dict):
@@ -465,7 +435,7 @@ class SearchGraphWidget(QWidget):
         self.history_view_changed.emit(False)
 
     def show_history_item(self, index: int) -> None:
-        """Switch to an older search without creating another history entry."""
+        # Restore the search without adding a history entry.
         if not 0 <= index < len(self._history):
             raise IndexError("Search history index out of range")
         was_showing_history = self._showing_history
@@ -488,7 +458,6 @@ class SearchGraphWidget(QWidget):
             notify()
 
     def save_history(self, path: str | Path) -> None:
-        """Optional: persist search history across application restarts."""
         Path(path).write_text(json.dumps(self._history, indent=2), encoding="utf-8")
 
     def load_history(self, path: str | Path) -> None:
@@ -508,14 +477,13 @@ class SearchGraphWidget(QWidget):
         self.history_view_changed.emit(False)
 
     def show_history_graph(self) -> None:
-        """Replace the result graph with up to ten clickable prior searches."""
         if self._transitioning or self._showing_history:
             return
         self._showing_history = True
         self._animate_switch(self._draw_history, lambda: self.history_view_changed.emit(True))
 
     def _draw_history(self) -> None:
-        """Draw the history view; called midway through the fade transition."""
+        # Rebuild midway through the fade transition.
         self._scene.clear()
         # History keeps all searches from this session, but renders only the
         # latest ten to prevent a crowded graph.
@@ -545,7 +513,6 @@ class SearchGraphWidget(QWidget):
         self._fit_scene(keep_results_frame=True)
 
     def return_to_results(self) -> None:
-        """Click the center History node to return to the selected query."""
         if self._current_index is not None:
             self.show_history_item(self._current_index)
         else:
