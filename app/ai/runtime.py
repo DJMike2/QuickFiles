@@ -308,11 +308,23 @@ class AIRuntime(ModelRuntime):
         except (ValueError, TypeError, KeyError) as exc:
             raise LLMServerError('The local model returned an invalid destination decision') from exc
 
+    @staticmethod
+    def _grounded_quote(quote, evidence):
+        from app.ai.evidence import compact
+        candidates = [compact(quote)]
+        # Decode extra JSON quoting, then require an exact source passage.
+        try:
+            decoded = json.loads(quote)
+            if isinstance(decoded, str):
+                candidates.extend([compact(decoded), compact(decoded.replace('\\n', '\n'))])
+        except (ValueError, TypeError):
+            pass
+        return next((quote for quote in candidates if quote and quote in compact(evidence)), '')
+
     @reuse_decision(REVIEW_PROMPT, lambda decisions: bool(decisions) and all(
         decision['verdict'] == 'keep' for decision in decisions.values()))
     def review_destination(self, files, destination, existing, status_cb=None, cancelled=None, *, _retry=True):
-        """A separate judgment receives evidence, never the assignment's original rationale."""
-        from app.ai.evidence import compact
+        # Review evidence independently of the assignment rationale.
         if not files:
             return {}
         keys = [str(i) for i in range(1, len(files) + 1)]
@@ -329,7 +341,8 @@ class AIRuntime(ModelRuntime):
                               'evidence':{'enum':list(range(len(options)))}}}
                               for key,options in zip(keys, passages)}, 'required': keys}},
             'required': ['coherent', 'reuse_existing', 'decisions']}
-        held = lambda reason: {f['id']: {'verdict': 'hold', 'reason': reason, 'evidence': ''} for f in files}
+        def held(reason):
+            return {file['id']: {'verdict': 'hold', 'reason': reason, 'evidence': ''} for file in files}
         try:
             raw = self._generate(REVIEW_PROMPT, json.dumps({'destination': destination,
                 'existing_destinations': existing,
@@ -373,17 +386,7 @@ class AIRuntime(ModelRuntime):
                     decision = {'verdict': 'hold', 'reason': ('Prefer the existing destination: ' + value['reuse_existing']
                         if value['reuse_existing'] else 'Proposed destination lacks a coherent shared purpose'), 'evidence': ''}
                 elif decision['verdict'] == 'keep':
-                    quote = decision['evidence']
-                    candidates = [compact(quote)]
-                    # Some small-model responses JSON-quote the passage a second time.
-                    # Remove only transport decoration, then still require a literal source match.
-                    try:
-                        decoded = json.loads(quote)
-                        if isinstance(decoded, str):
-                            candidates.extend([compact(decoded), compact(decoded.replace('\\n', '\n'))])
-                    except (ValueError, TypeError):
-                        pass
-                    grounded = next((q for q in candidates if q and q in compact(file['evidence'])), '')
+                    grounded = self._grounded_quote(decision['evidence'], file['evidence'])
                     if decision['reason'].strip() and grounded:
                         decision = {**decision, 'evidence': grounded}
                     else:
