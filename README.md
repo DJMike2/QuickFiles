@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/QuickFiles-Banner.png" alt="QuickFiles Banner" width="100%">
+  <img src="assets/QuickFiles-Banner-Compact.png" alt="QuickFiles Banner" width="100%">
 </p>
 
 <div align="center">
