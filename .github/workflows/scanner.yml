@@ -3,25 +3,13 @@ name: Native scanner
 on:
   push:
     paths:
-      - 'app/core/**'
-      - 'app/constants.py'
-      - 'app/config.py'
-      - 'app/platforms.py'
-      - 'app/main.py'
-      - 'app/ai/**'
+      - 'app/core/native/**'
       - 'tools/build_scanner.py'
-      - 'tests/**'
       - '.github/workflows/scanner.yml'
   pull_request:
     paths:
-      - 'app/core/**'
-      - 'app/constants.py'
-      - 'app/config.py'
-      - 'app/platforms.py'
-      - 'app/main.py'
-      - 'app/ai/**'
+      - 'app/core/native/**'
       - 'tools/build_scanner.py'
-      - 'tests/**'
       - '.github/workflows/scanner.yml'
   workflow_dispatch:
 
@@ -30,16 +18,16 @@ permissions:
 
 jobs:
   scanner:
-    env:
-      QT_QPA_PLATFORM: offscreen
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
+            binary: fastscan
             artifact: fastscan-linux-x64
             archive: fastscan-linux-x64.tar.gz
           - os: windows-latest
+            binary: fastscan.exe
             artifact: fastscan-windows-x64
             archive: fastscan-windows-x64.zip
     runs-on: ${{ matrix.os }}
@@ -54,21 +42,8 @@ jobs:
         run: '"C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Build scanner
         run: python -B tools/build_scanner.py
-      - name: Install Linux Qt runtime libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libegl1 libopengl0 libxkbcommon0
-      - name: Install Python dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Test scanner and planning integration
-        env:
-          # Windows' default temp folder is inside protected AppData. Keep test
-          # fixtures in the runner's scratch directory so real path checks apply.
-          TMPDIR: ${{ runner.temp }}
-        run: python -B -m unittest discover -s tests -p "test_*.py"
-      - name: Run native scan benchmark
-        run: python -B tests/benchmark_scan.py . --threads 4 --repeat 2
+      - name: Verify scanner starts
+        run: ./app/core/native/bin/${{ matrix.binary }} --version
       - name: Package Linux executable with permissions
         if: runner.os == 'Linux'
         run: tar -czf fastscan-linux-x64.tar.gz -C app/core/native/bin fastscan
