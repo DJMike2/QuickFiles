@@ -1,5 +1,6 @@
 """Evidence contracts and deterministic boundaries for organizer steps 6–8."""
 from dataclasses import dataclass
+from contextlib import closing
 import hashlib
 import json
 import re
@@ -13,11 +14,7 @@ SCOPES = ('course', 'client', 'project', 'topic', 'kind', 'unknown', 'mixed')
 
 
 def named_field(text, value, label=None):
-    """Literal field syntax supports unfamiliar labels without guessing their role.
-
-    A model may interpret the role of an unfamiliar field, but such an identity
-    stays nonliteral and must be semantically reviewed before moves are retained.
-    """
+    # Unfamiliar labels still need semantic review before they establish ownership.
     field = label or r'[^\W\d_][\w -]{1,39}'
     return bool(re.search(r'(?im)^\s*(?:'+field+r')\s*:\s*'+re.escape(value)
                           +r'(?=\s|[.;,]|$)', text))
@@ -34,7 +31,7 @@ class Profile:
 
     def evidence_dict(self):
         # A copied heading is evidence, not a semantic approval signal.
-        return {key:getattr(self,key) for key in ('description','scope_kind','scope','topic','quote')}
+        return {key: getattr(self, key) for key in ('description', 'scope_kind', 'scope', 'topic', 'quote')}
 
     @classmethod
     def from_result(cls, value, evidence):
@@ -42,15 +39,22 @@ class Profile:
         all_codes = course_codes(text)
         header = literal_header_identity(evidence)
         clients = explicit_clients(evidence)
-        first_line = evidence.splitlines()[0] if evidence.splitlines() else ''
+        lines = evidence.splitlines()
+        first_line = lines[0] if lines else ''
         client_field = re.match(r'\s*(?:client|customer|bill(?:ed)? to)\s*:', evidence, re.I)
-        owned_client = bool(client_field or any(normalized(first_line)==normalized(c) for c in clients))
-        codes = all_codes if not owned_client and (course_codes(header) or value.get('scope_kind') == 'course') else []
-        if (value.get('scope_kind') not in SCOPES or not isinstance(value.get('scope'), list)
-                or len(value['scope']) > 4 or any(not isinstance(x, str) or not x.strip()
-                    or (compact(x).casefold() not in text.casefold()
-                        and normalized(x) not in {normalized(code) for code in all_codes}) for x in value['scope'])):
+        owned_client = bool(client_field or any(normalized(first_line) == normalized(client) for client in clients))
+        codes = []
+        if not owned_client and (course_codes(header) or value.get('scope_kind') == 'course'):
+            codes = all_codes
+        scope = value.get('scope')
+        if value.get('scope_kind') not in SCOPES or not isinstance(scope, list) or len(scope) > 4:
             raise ValueError('Profile scope is not present in its evidence')
+        for name in scope:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError('Profile scope is not present in its evidence')
+            if (compact(name).casefold() not in text.casefold()
+                    and normalized(name) not in {normalized(code) for code in all_codes}):
+                raise ValueError('Profile scope is not present in its evidence')
         for key, limit in [('description', 200), ('topic', 96), ('quote', 140)]:
             if not isinstance(value.get(key), str) or len(value[key]) > limit:
                 raise ValueError('Invalid profile description')
@@ -120,7 +124,6 @@ class ProfileCache(SummaryCache):
     def get_profile(self, key):
         if self.path is None:
             return None
-        from contextlib import closing
         with closing(self._connect()) as connection, connection:
             row = connection.execute('SELECT value FROM summaries WHERE key=?', ('profile:' + key,)).fetchone()
         if row:
@@ -133,7 +136,6 @@ class ProfileCache(SummaryCache):
     def put_profile(self, key, value):
         if self.path is None:
             return
-        from contextlib import closing
         with closing(self._connect()) as connection, connection:
             connection.execute('INSERT OR REPLACE INTO summaries VALUES (?,?)',
                                ('profile:' + key, json.dumps(value, ensure_ascii=False)))
