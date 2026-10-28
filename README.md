@@ -124,6 +124,10 @@ Preferences, logs, downloaded models, search caches, and the undo journal are st
 
 </details>
 
+Tests, benchmark tools, and performance reports are maintained locally. Public CI
+builds and smoke-checks the Windows and Linux scanners. Models, caches, and
+generated binaries are excluded from version control.
+
 ## License
 
 QuickFiles is **source-available** under the [Sustainable Use License 1.0](LICENSE).
