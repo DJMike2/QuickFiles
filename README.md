@@ -111,19 +111,6 @@ python tools/build_scanner.py --target windows --cxx x86_64-w64-mingw32-g++-posi
 </details>
 
 <details>
-<summary><strong>Tests and read-only previews</strong></summary>
-
-```sh
-python -B -m unittest discover -s tests -p "test_*.py"
-python -B tests/benchmark_scan.py "/path/to/folder" --threads 4 --repeat 3
-python -B tools/audit_organizer.py "/path/to/folder" --preview
-```
-
-The audit previews proposals without moving files. Models, caches, and generated binaries are excluded from version control.
-
-</details>
-
-<details>
 <summary><strong>Settings and local data</strong></summary>
 
 Model defaults: [`models/settings.json`](models/settings.json). Prompts: [`app/ai/prompts.py`](app/ai/prompts.py).
@@ -137,6 +124,10 @@ Preferences, logs, downloaded models, search caches, and the undo journal are st
 
 </details>
 
+Tests, benchmark tools, and performance reports are maintained locally. Public CI
+builds and smoke-checks the Windows and Linux scanners. Models, caches, and
+generated binaries are excluded from version control.
+
 ---
 
-[Organizer process](docs/organizer-process.md) · [Recorded benchmarks](metrics/README.md) · [License](LICENSE)
+[Organizer process](docs/organizer-process.md) · [License](LICENSE)
