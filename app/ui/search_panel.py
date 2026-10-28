@@ -1,28 +1,4 @@
-"""Right-side chat controls plus a left-side graph for semantic search JSON.
-
-The UI emits searchRequested; a background search worker returns display_results
-with an answer based on actual retrieved files.
-
-Expected backend JSON format (see sample-search-results.json):
-    {
-      "query": "find my algorithms assignment",             # string
-      "answer": "Found 2 files",                           # optional string
-      "results": [                                         # array of objects
-        {"id": "1", "name": "a.pdf", "path": "C:/files/a.pdf",
-         "type": "pdf", "score": 0.92},                # score: 0.0-1.0
-        {"id": "2", "name": "b.cpp", "path": "C:/files/b.cpp",
-         "type": "cpp", "score": 0.85}
-      ]
-    }
-
-Optional metadata on each result (not required for existing JSON samples):
-    "size_bytes": 24576, "modified": "2026-10-24"
-or  "metadata": {"size_bytes": 24576, "modified": "2026-10-24"}
-Existing local files supply their actual size/date automatically on hover.
-
-Python comments above are illustrative; real .json files cannot contain // or
-# comments. The provided sample uses an optional `_format_notes` object instead.
-"""
+# AI search graph, file details, and a single-turn chat sidebar.
 
 from __future__ import annotations
 
@@ -31,8 +7,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QPalette
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -126,6 +101,14 @@ class SearchPanel(QWidget):
         outer.addWidget(right)
 
         # The search folder lives in the main toolbar; standalone panels keep it here.
+        self._build_scope_bar()
+
+        right_column.addWidget(self._build_metadata_panel())
+
+        right_column.addWidget(self._build_chat_panel(), 1)
+        self.set_dark(True)
+
+    def _build_scope_bar(self):
         self.scope_bar = QWidget()
         self.scope_bar.setObjectName("scopeBar")
         scope_layout = QHBoxLayout(self.scope_bar)
@@ -144,6 +127,7 @@ class SearchPanel(QWidget):
         self.browse_button.clicked.connect(self._browse)
         scope_layout.addWidget(self.browse_button)
 
+    def _build_metadata_panel(self):
         metadata = QFrame()
         metadata.setObjectName("fileMetadataPanel")
         metadata.setFixedHeight(245)
@@ -196,8 +180,9 @@ class SearchPanel(QWidget):
         meta_rows.addStretch(1)
         meta_scroll.setWidget(meta_content)
         meta_frame_layout.addWidget(meta_scroll, 1)
-        right_column.addWidget(metadata)
+        return metadata
 
+    def _build_chat_panel(self):
         sidebar = QFrame()
         sidebar.setObjectName("searchChatSidebar")
         side = QVBoxLayout(sidebar)
@@ -253,7 +238,7 @@ class SearchPanel(QWidget):
 
         # This is deliberately the only testing control. In the full app,
         # MainWindow passes show_json_loader=False so users never see it.
-        if show_json_loader:
+        if self.show_json_loader:
             footer_layout.addWidget(self.scope_bar)
             self.json_button = QPushButton("Load JSON…")
             self.json_button.clicked.connect(self._load_json)
@@ -284,9 +269,7 @@ class SearchPanel(QWidget):
         self.query_count.setAlignment(Qt.AlignmentFlag.AlignRight)
         footer_layout.addWidget(self.query_count)
         side.addWidget(footer)
-
-        right_column.addWidget(sidebar, 1)
-        self.set_dark(True)
+        return sidebar
 
     def set_dark(self, dark: bool) -> None:
         self._colors = PANEL_COLORS[dark]
