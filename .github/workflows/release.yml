@@ -1,0 +1,45 @@
+
+      - name: Sign Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "quickfiles.pfx"
+
+          try {
+            [IO.File]::WriteAllBytes(
+              $certPath,
+              [Convert]::FromBase64String($env:CERT_BASE64)
+            )
+
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" `
+              -Recurse -Filter signtool.exe |
+              Where-Object { $_.FullName -match '\\x64\\signtool.exe$' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+
+            if (-not $signtool) {
+              throw "SignTool was not found"
+            }
+
+            & $signtool sign /fd SHA256 `
+              /f $certPath `
+              /p $env:CERT_PASSWORD `
+              "dist/QuickFiles/QuickFiles.exe"
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Signing failed"
+            }
+
+            $signature = Get-AuthenticodeSignature "dist/QuickFiles/QuickFiles.exe"
+            if ($signature.SignerCertificate.Subject -notlike "*CN=QuickFiles Dev*") {
+              throw "Unexpected signing certificate"
+            }
+
+            Write-Host "QuickFiles signature embedded"
+          }
+          finally {
+            Remove-Item $certPath -Force -ErrorAction SilentlyContinue
+          }
