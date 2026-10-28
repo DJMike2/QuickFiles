@@ -7,16 +7,19 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 import time
 from types import SimpleNamespace
 
 import numpy as np
+from PIL import Image
 from PySide6.QtWidgets import QApplication, QPushButton
 from PySide6.QtCore import QCoreApplication, QEvent
 
-from app.ai.llm_server import LLMServerError
+from app.ai.llm_server import LLMServer, LLMServerError
 from app.ai.runtime import AIRuntime
-from app.core.search import FileSearch, keyword_pattern, readable
+from app.ai.vision import VisionRuntime
+from app.core.search import FileSearch, identifiers, keyword_pattern, readable
 from app.ui.search_panel import SearchPanel
 from app.ui.main_window import MainWindow
 from app.config import AppConfig
@@ -30,8 +33,16 @@ class Rewriter:
         self.topic = 'automobile repair'
         self.filters = {'extensions': [], 'exclude_extensions': [], 'exclude_terms': []}
 
+        self.rejected, self.reviews, self.review_error = set(), [], None
+
     def rewrite_query(self, query, status, cancelled):
         return {'query': self.topic, 'answer': 'Found 9999 files', **self.filters}
+
+    def review_results(self, query, files, status, cancelled):
+        self.reviews.append([file['name'] for file in files])
+        if self.review_error:
+            raise self.review_error
+        return {file['key'] for file in files if file['name'] not in self.rejected}
 
 
 class Embeddings:
@@ -47,11 +58,30 @@ class Embeddings:
             if '\n' in text:
                 self.documents.append(text)
             lower = text.lower()
-            if any(word in lower for word in ('car', 'automobile', 'brakes')):
+            if 'lowsim' in lower:
+                rows.append([.5, .866, 0.])  # Related, but far less similar than a direct match.
+            elif any(word in lower for word in ('car', 'automobile', 'brakes')):
                 rows.append([1., 0., 0.])
             else:
                 rows.append([0., 0., 1.] if 'pasta' in lower else [0., 1., 0.])
         return np.asarray(rows, dtype=np.float32)
+
+
+class Vision:
+    available = True
+    fingerprint = 'vision-test'
+
+    def __init__(self):
+        self.calls, self.shutdowns, self.error = [], 0, None
+
+    def describe(self, path, kind, status, cancelled):
+        self.calls.append(Path(path).name)
+        if self.error:
+            raise self.error
+        return f'Image: a red automobile in a car repair garage ({kind})'
+
+    def shutdown(self):
+        self.shutdowns += 1
 
 
 class SearchTests(unittest.TestCase):
@@ -122,6 +152,11 @@ class SearchTests(unittest.TestCase):
         self.assertTrue(keyword_pattern('stats').search('math stat 415'))
         self.assertTrue(keyword_pattern('problem sets').search('problem_set_2'))
         self.assertFalse(keyword_pattern('hw').search('show notes'))
+        self.assertTrue(keyword_pattern('promo').search('a promotional banner'))
+        self.assertFalse(keyword_pattern('bill').search('billing address'))
+        self.assertTrue(keyword_pattern('homework 2').search(readable('HW02').casefold()))
+        self.assertEqual(identifiers(['stat 415', 'homework 2', 'last 3', '2025', '1099', 'w 2', 'lab']),
+                         ['stat 415', 'homework 2', '1099', 'w 2'])
         (self.root/'HW6.txt').write_text('problem 1')
         self.rewriter.topic = 'homework'
         self.rewriter.filters['keywords'] = ['homework']
@@ -130,11 +165,50 @@ class SearchTests(unittest.TestCase):
 
     def test_total_count_is_distinct_from_ten_displayed_results(self):
         for i in range(11):
-            (self.root/f'car_{i}.txt').write_text('car repair')
+            (self.root/f'item_{i}.txt').write_text('car repair')
         payload = self.search.search(self.root, 'car repair')
-        self.assertEqual(payload['matched_files'], 12)
-        self.assertEqual(len(payload['results']), 10)
-        self.assertIn('Found 12 matching files. Showing the top 10.', payload['answer'])
+        self.assertEqual(len(self.rewriter.reviews[-1]), 10)
+        self.assertEqual((payload['matched_files'], len(payload['results'])), (10, 10))
+        self.assertIn('Found 10 matching files. Checked the top 10 of 12 possible matches.', payload['answer'])
+        # Filter-only requests are not reviewed and report every match.
+        self.rewriter.topic = ''
+        self.rewriter.filters['extensions'] = ['.txt']
+        payload = self.search.search(self.root, 'txt files')
+        self.assertEqual((payload['matched_files'], len(payload['results'])), (13, 10))
+        self.assertIn('Found 13 matching files (TXT files). Showing the top 10.', payload['answer'])
+
+    def test_the_review_makes_the_final_call_and_failures_keep_the_matches(self):
+        (self.root/'manual.txt').write_text('car repair manual')
+        self.rewriter.rejected = {'a.txt'}
+        payload = self.search.search(self.root, 'car repair')
+        self.assertEqual(sorted(self.rewriter.reviews[-1]), ['a.txt', 'manual.txt'])
+        self.assertEqual([row['name'] for row in payload['results']], ['manual.txt'])
+        self.assertIn('Found 1 matching file.', payload['answer'])
+        self.rewriter.rejected = {'a.txt', 'manual.txt'}
+        payload = self.search.search(self.root, 'car repair')
+        self.assertEqual(payload['results'], [])
+        self.assertTrue(payload['answer'].startswith('No close matches'))
+        self.rewriter.review_error = LLMServerError('engine stopped')
+        with self.assertLogs('app.core.search', level='WARNING'):
+            payload = self.search.search(self.root, 'car repair')
+        self.assertEqual({row['name'] for row in payload['results']}, {'a.txt', 'manual.txt'})
+
+    def test_requests_with_only_filters_skip_the_review(self):
+        self.rewriter.topic = ''
+        self.rewriter.filters['extensions'] = ['.txt']
+        payload = self.search.search(self.root, 'txt files')
+        self.assertEqual(len(payload['results']), 2)
+        self.assertEqual(self.rewriter.reviews, [])
+
+    def test_a_file_named_for_every_typed_word_is_never_cut_as_weak(self):
+        (self.root/'car_guide.txt').write_text('car repair guide')
+        (self.root/'car_scan.txt').write_text('lowsim')
+        (self.root/'other.txt').write_text('car lowsim')
+        self.rewriter.topic = 'car'
+        payload = self.search.search(self.root, 'car')
+        names = {row['name'] for row in payload['results']}
+        self.assertIn('car_scan.txt', names)
+        self.assertNotIn('other.txt', names)
 
     def test_project_sources_are_searchable_dependencies_and_links_are_skipped(self):
         project = self.root/'Project'
@@ -147,13 +221,94 @@ class SearchTests(unittest.TestCase):
         outside.write_text('car repair outside scope')
         if os.name != 'nt':
             (self.root/'linked.txt').symlink_to(outside)
-            (self.root/'car:notes.txt').write_text('car repair local filename')
+            (self.root/'local:notes.txt').write_text('car repair local filename')
         payload = self.search.search(self.root, 'car repair')
         paths = {row['id'] for row in payload['results']}
         self.assertIn('Project/code.txt', paths)
         self.assertFalse(any('node_modules' in path or path.startswith('.') or 'linked' in path for path in paths))
         if os.name != 'nt':
-            self.assertIn('car:notes.txt', paths)
+            self.assertIn('local:notes.txt', paths)
+
+    def test_a_numbered_name_in_the_request_keeps_only_files_that_carry_it(self):
+        (self.root/'homework_a.txt').write_text('STAT 415 problems')
+        (self.root/'homework_b.txt').write_text('MATH 312 problems')
+        self.rewriter.topic = 'stat 415 homework'
+        payload = self.search.search(self.root, 'stat 415 homework')
+        self.assertEqual([row['name'] for row in payload['results']], ['homework_a.txt'])
+        # When no file carries the name, nothing is gated away.
+        self.rewriter.topic = 'stat 999 homework'
+        payload = self.search.search(self.root, 'stat 999 homework')
+        self.assertEqual({row['name'] for row in payload['results']}, {'homework_a.txt', 'homework_b.txt'})
+
+    def test_matches_far_below_the_best_one_are_dropped(self):
+        (self.root/'pasta.txt').write_text('pasta')
+        (self.root/'dinner.txt').write_text('tomatoes and pasta')
+        self.rewriter.topic = 'pasta'
+        payload = self.search.search(self.root, 'pasta')
+        self.assertEqual([row['name'] for row in payload['results']], ['pasta.txt'])
+
+    def test_files_without_text_need_a_topic_word_in_their_name_or_folder(self):
+        (self.root/'Carpool').mkdir()
+        (self.root/'Carpool/IMG_1.jpg').write_bytes(b'\xff\xd8\xff')
+        (self.root/'Carpool/repair_photo.jpg').write_bytes(b'\xff\xd8\xff')
+        payload = self.search.search(self.root, 'automobile repair')
+        names = {row['name'] for row in payload['results']}
+        self.assertIn('repair_photo.jpg', names)
+        self.assertNotIn('IMG_1.jpg', names)
+
+    def test_exclusions_match_abbreviated_names(self):
+        (self.root/'HW2.txt').write_text('problem set')
+        (self.root/'HW2_soln.txt').write_text('problem set')
+        self.rewriter.topic = 'homework'
+        self.rewriter.filters['exclude_terms'] = ['solution']
+        payload = self.search.search(self.root, 'homework, not the solutions')
+        self.assertEqual([row['name'] for row in payload['results']], ['HW2.txt'])
+
+    def test_keywords_without_a_query_still_name_the_subject(self):
+        self.rewriter.topic = ''
+        self.rewriter.filters.update(extensions=['.txt'], keywords=['pasta'])
+        payload = self.search.search(self.root, 'pasta txt files')
+        self.assertEqual([row['name'] for row in payload['results']], ['b.txt'])
+
+    def test_files_beside_a_match_in_a_folder_named_for_the_request_are_reviewed(self):
+        (self.root/'Repair').mkdir()
+        (self.root/'Repair/brakes.txt').write_text('car brakes replaced')
+        (self.root/'Repair/receipt.txt').write_text('oil change receipt')
+        (self.root/'receipt.txt').write_text('oil change receipt')
+        payload = self.search.search(self.root, 'car repair')
+        paths = {row['id'] for row in payload['results']}
+        self.assertTrue({'Repair/brakes.txt', 'Repair/receipt.txt'} <= paths)
+        self.assertNotIn('receipt.txt', paths)
+        # A numbered request wants one item, not the rest of its folder.
+        payload = self.search.search(self.root, 'car repair 473')
+        self.assertNotIn('Repair/receipt.txt', {row['id'] for row in payload['results']})
+
+    def test_photos_are_found_by_what_they_show_and_described_once(self):
+        (self.root/'IMG_0001.jpg').write_bytes(b'\xff\xd8\xff photo')
+        payload = self.search.search(self.root, 'car repair')
+        self.assertNotIn('IMG_0001.jpg', {row['name'] for row in payload['results']})
+        vision = self.search.vision = Vision()
+        payload = self.search.search(self.root, 'car repair')
+        self.assertIn('IMG_0001.jpg', {row['name'] for row in payload['results']})
+        self.assertEqual((vision.calls, vision.shutdowns), (['IMG_0001.jpg'], 1))
+        self.search.search(self.root, 'car repair')
+        self.assertEqual(vision.calls, ['IMG_0001.jpg'])  # Cached: never described twice.
+        # Without the vision model the stored description is still used.
+        vision.available = False
+        payload = self.search.search(self.root, 'car repair')
+        self.assertIn('IMG_0001.jpg', {row['name'] for row in payload['results']})
+
+    def test_a_failing_vision_model_still_indexes_and_retries_later(self):
+        (self.root/'IMG_0001.jpg').write_bytes(b'\xff\xd8\xff photo')
+        vision = self.search.vision = Vision()
+        vision.error = LLMServerError('vision engine stopped')
+        with self.assertLogs('app.core.search', level='WARNING'):
+            payload = self.search.search(self.root, 'car repair')
+        self.assertEqual({row['name'] for row in payload['results']}, {'a.txt'})
+        self.assertEqual(vision.shutdowns, 1)
+        vision.error = None
+        payload = self.search.search(self.root, 'car repair')
+        self.assertIn('IMG_0001.jpg', {row['name'] for row in payload['results']})
 
     def test_unavailable_llm_and_cancellation_never_become_fake_empty_results(self):
         with self.assertRaisesRegex(ValueError, '12,000'):
@@ -171,8 +326,10 @@ class ScriptedServer:
 
     def __init__(self, response):
         self.response = response
+        self.calls = []
 
     def chat(self, *args, **kwargs):
+        self.calls.append(kwargs)
         return self.response
 
     def stop(self):
@@ -206,6 +363,69 @@ class SearchPlanTests(unittest.TestCase):
         self.assertEqual((plan['min_size_mb'], plan['max_size_mb']), (5., 0.))
         self.assertEqual((plan['modified_after'], plan['modified_before']), ('2026-10-25', ''))
         self.assertEqual(plan['sort'], 'newest')
+
+    def test_review_can_only_name_candidates_and_keeps_the_listed_ones(self):
+        manager = SimpleNamespace(runtime_settings={'max_tokens': 64, 'temperature': .2},
+                                  search_settings={'max_tokens': 64, 'temperature': 0})
+        runtime = AIRuntime(SimpleNamespace(is_available=True), manager)
+        files = [{'key': f'dir/{name}', 'name': name, 'folder': 'dir', 'kind': 'document', 'excerpt': 'text'}
+                 for name in ('a.pdf', 'b.pdf', 'c.pdf')]
+        runtime._server = server = ScriptedServer('[1,3]')
+        self.assertEqual(runtime.review_results('reports', files), {'dir/a.pdf', 'dir/c.pdf'})
+        self.assertEqual(server.calls[0]['grammar'], 'root ::= "[" ( id ( "," id )* )? "]"\nid ::= "1" | "2" | "3"')
+        runtime._server = ScriptedServer('[]')
+        self.assertEqual(runtime.review_results('reports', files), set())
+        self.assertEqual(runtime.review_results('reports', []), set())
+
+    def test_images_are_sent_as_image_parts_and_short_answers_may_be_truncated(self):
+        server = LLMServer(None, None, {'top_p': .8, 'top_k': 20, 'min_p': 0, 'seed': 1})
+        server._process = SimpleNamespace(poll=lambda: None)
+        sent = []
+        server._request = lambda endpoint, payload: sent.append(payload) or {
+            'choices': [{'finish_reason': 'length', 'message': {'content': 'a red car'}}]}
+        self.assertEqual(server.chat('describe', 'Describe it.', 8, 0, images=[b'jpeg'], allow_truncated=True),
+                         'a red car')
+        text, image = sent[0]['messages'][1]['content']
+        self.assertEqual(text, {'type': 'text', 'text': 'Describe it.'})
+        self.assertEqual(image['image_url']['url'], 'data:image/jpeg;base64,anBlZw==')
+        with self.assertRaises(LLMServerError):
+            server.chat('describe', 'Describe it.', 8, 0)
+
+    def test_only_the_text_model_uses_speculative_decoding(self):
+        settings = {'context_tokens': 8192, 'threads': 4, 'speculative': 'draft-mtp', 'pooling': 'mean'}
+        text = LLMServer(None, 'q.gguf', settings)._command(Path('llama-server'), 99)
+        vision = LLMServer(None, 'vl.gguf', settings, mmproj='mm.gguf')._command(Path('llama-server'), 99)
+        embedding = LLMServer(None, 'e.gguf', settings, embedding=True)._command(Path('llama-server'), 0)
+        self.assertEqual(text[-2:], ['--spec-type', 'draft-mtp'])
+        self.assertNotIn('--spec-type', vision + embedding)
+
+    def test_vision_unloads_the_search_model_and_labels_descriptions(self):
+        events = []
+        runtime = SimpleNamespace(shutdown=lambda: events.append('search model unloaded'))
+        manager = SimpleNamespace(vision_downloaded=True, vision_model_path='vl.gguf', vision_mmproj_path='mmproj.gguf',
+                                  runtime_settings={'context_tokens': 8192})
+        vision = VisionRuntime(SimpleNamespace(is_available=True), manager, runtime)
+        with tempfile.TemporaryDirectory() as directory, mock.patch('app.ai.vision.LLMServer') as server:
+            photo, broken = Path(directory)/'photo.png', Path(directory)/'broken.jpg'
+            Image.new('RGB', (8, 8)).save(photo)
+            broken.write_bytes(b'x')
+            server.return_value.start.side_effect = lambda *args: events.append('vision model started')
+            server.return_value.chat.return_value = ' a red\ncar '
+            self.assertEqual(vision.describe(photo, 'image'), 'Image: a red car')
+            self.assertEqual(vision.describe(broken, 'image'), '')
+        self.assertEqual(events, ['search model unloaded', 'vision model started'])
+        self.assertEqual(server.call_args.kwargs['mmproj'], 'mmproj.gguf')
+        self.assertEqual(server.call_args.args[2]['context_tokens'], 4096)
+
+    def test_omitted_filters_default_to_none(self):
+        manager = SimpleNamespace(runtime_settings={'max_tokens': 64, 'temperature': .2},
+                                  search_settings={'max_tokens': 64, 'temperature': 0})
+        runtime = AIRuntime(SimpleNamespace(is_available=True), manager)
+        runtime._server = ScriptedServer('{"query":"resume","keywords":["resume","cv"]}')
+        plan = runtime.rewrite_query('my newest resume')
+        self.assertEqual((plan['query'], plan['keywords']), ('resume', ['resume', 'cv']))
+        self.assertEqual((plan['kinds'], plan['extensions'], plan['exclude_terms']), ([], [], []))
+        self.assertEqual((plan['min_size_mb'], plan['modified_after'], plan['sort']), (0., '', 'relevance'))
 
     def test_a_wanted_word_is_never_also_excluded(self):
         plan = self.plan('homework solutions, not drafts', query='homework solutions',
@@ -263,7 +483,7 @@ class SearchWorkerTests(unittest.TestCase):
         root = Path(directory.name)
         config = AppConfig(root/'data')
         config.update({'allowed_root': str(root), 'search_root': str(root)})
-        context = SimpleNamespace(config=config, search=search, shutdown=lambda: None,
+        context = SimpleNamespace(config=config, search=search, shutdown=lambda: None, cancel_ai=lambda: None,
             runtime=SimpleNamespace(available=True, backend_label='Local AI ready'),
             journal=SimpleNamespace(get_latest_batch=lambda: None))
         window = MainWindow(context)
@@ -291,7 +511,8 @@ class SearchWorkerTests(unittest.TestCase):
         with self.assertLogs('app.ui.worker', level='ERROR'):
             window._search('car repair')
             self.finish(window)
-        self.assertEqual(window.search_panel.response.text(), 'Search failed: Index unavailable')
+        self.assertEqual(window.search_panel.response.text(),
+                         "Search failed: Couldn't complete this request. Please try again.")
         self.assertEqual(window.search_panel.graph._history, [])
         self.assertIs(window.plan, original_plan)
 
@@ -308,6 +529,20 @@ class SearchWorkerTests(unittest.TestCase):
         self.assertEqual(window.search_panel.response.text(), 'Search stopped.')
         self.assertEqual(window.search_panel.graph._history, [])
         self.assertTrue(window.search_panel.search_button.isEnabled())
+
+    def test_model_failure_shows_retry_message_without_internal_details(self):
+        def fail(*args):
+            raise LLMServerError('Invalid JSON schema: hidden internal model decision')
+        window = self.window(SimpleNamespace(search=fail))
+        with self.assertLogs('app.ui.worker', level='ERROR') as logs:
+            window._search('car repair')
+            self.finish(window)
+        message = window.search_panel.response.text()
+        self.assertIn('Please try again', message)
+        self.assertNotIn('schema', message)
+        self.assertNotIn('hidden internal', message)
+        self.assertIn('hidden internal model decision', '\n'.join(logs.output))
+        self.assertEqual(window.search_panel.graph._history, [])
 
 
 if __name__ == '__main__':

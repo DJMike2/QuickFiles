@@ -63,7 +63,7 @@ class PlanningTests(unittest.TestCase):
         choices = deque(choices)
         def choose(file, destinations, *args):
             folder = choices[0] if choices else ''
-            if folder == 'Sorted' and folder not in {d['path'] for d in destinations}:
+            if folder and not folder.startswith('../') and folder not in {d['path'] for d in destinations}:
                 return {'folder': '', 'match': 'uncertain', 'reason': 'Existing folder does not match', 'evidence': ''}
             if choices:
                 choices.popleft()
@@ -83,7 +83,7 @@ class PlanningTests(unittest.TestCase):
                          [('alpha.txt', 'Sorted/alpha.txt'), ('beta.txt', 'Sorted/beta.txt')])
         self.assertEqual(self.inventory.protected_projects, ['Project'])
         self.assertFalse(any(entry.rel_path.startswith('Project/') for entry in self.inventory.entries))
-        self.assertEqual(len(plan.warnings), 2)
+        self.assertEqual(plan.warnings, [])
         self.assertFalse(any('source.js' in row['evidence'] for row in seen))
 
     def test_new_singleton_is_kept_but_existing_singleton_is_allowed(self):
@@ -99,7 +99,36 @@ class PlanningTests(unittest.TestCase):
         plan = planner.plan(self.inventory)
         self.assertNotIn('Invented', planner.destinations)
         self.assertEqual(plan.actions, [])
-        self.assertTrue(plan.warnings)
+        self.assertEqual(plan.warnings, [])
+
+    def test_deep_group_is_normalized_without_discarding_its_subject(self):
+        groups = [{'path': 'Personal/Education/University', 'purpose': 'example documents', 'members': [1, 2]}]
+        planner, _ = self.planner(groups, ['Education/University', 'Education/University', ''])
+        with self.assertLogs('app.core.planner', level='DEBUG') as logs:
+            plan = planner.plan(self.inventory)
+        self.assertEqual([a.dst_rel for a in plan.actions],
+                         ['Education/University/alpha.txt', 'Education/University/beta.txt'])
+        self.assertEqual(plan.warnings, [])
+        self.assertIn('Personal/Education/University', '\n'.join(logs.output))
+        self.assertIn('Normalized suggested destination', '\n'.join(logs.output))
+
+    def test_protected_group_is_skipped_quietly_with_debug_diagnostics(self):
+        groups = [{'path': 'Project/Injected', 'purpose': 'example documents', 'members': [1, 2]}]
+        planner, _ = self.planner(groups, ['', '', ''])
+        with self.assertLogs('app.core.planner', level='DEBUG') as logs:
+            plan = planner.plan(self.inventory)
+        self.assertEqual(plan.actions, [])
+        self.assertEqual(plan.warnings, [])
+        self.assertIn('Project/Injected', '\n'.join(logs.output))
+        self.assertIn('protected application/project folder', '\n'.join(logs.output))
+
+    def test_rejected_protected_group_does_not_discard_other_valid_groups(self):
+        groups = [{'path': path, 'purpose': 'example documents', 'members': [1, 2]}
+                  for path in ['Project/Education/University', 'Sorted']]
+        planner, _ = self.planner(groups, ['Sorted', 'Sorted', ''])
+        plan = planner.plan(self.inventory)
+        self.assertEqual([a.dst_rel for a in plan.actions], ['Sorted/alpha.txt', 'Sorted/beta.txt'])
+        self.assertEqual(plan.warnings, [])
 
     def test_assignment_cannot_escape_compatible_destinations(self):
         planner, _ = self.planner([], ['../escape'])

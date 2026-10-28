@@ -148,6 +148,7 @@ class WholeReviewTests(DirectoryCase):
             Reviewer(runtime).review(plan, rows, dest)
             self.assertEqual(len(plan.actions), int(existing))
             self.assertIn('b.txt', plan.review['held'])
+            self.assertEqual(plan.warnings, [])
 
     def test_generic_year_container_cannot_be_approved_by_the_model(self):
         plan, rows, dest = self.setup_review('archives/2026')
@@ -174,6 +175,7 @@ class WholeReviewTests(DirectoryCase):
         Reviewer(SimpleNamespace(review_destination=changed)).review(plan, rows, dest)
         self.assertEqual(plan.actions, [])
         self.assertIn('changed', plan.review['held']['b.txt'])
+        self.assertTrue(any('changed' in w.message and 'scan again' in w.message for w in plan.warnings))
 
     def test_collision_rejection_cannot_leave_new_singleton(self):
         plan, rows, dest = self.setup_review()
@@ -187,6 +189,15 @@ class WholeReviewTests(DirectoryCase):
 
 
 class ApplyVerificationTests(DirectoryCase):
+    def test_move_failure_is_logged_and_preserves_the_original(self):
+        self.write('a.txt', 'Original')
+        with patch('app.core.executor.safe_move', side_effect=OSError('Disk write failed')), \
+             self.assertLogs('app.core.executor', level='ERROR') as logs:
+            result = Executor(self.root, self.journal).apply([self.action('a.txt', 'Subject/a.txt')])
+        self.assertEqual(result.failed, 1)
+        self.assertEqual((self.root/'a.txt').read_text(), 'Original')
+        self.assertIn('Disk write failed', '\n'.join(logs.output))
+
     def test_collision_defaults_reject_and_legacy_suffix_requires_explicit_opt_in(self):
         self.write('a.txt','Original');self.write('Subject/a.txt','Occupied')
         plan=OrganizationPlan(str(self.root),[self.action('a.txt','Subject/a.txt')])
@@ -416,6 +427,100 @@ class ApprovalAndPreviewTests(DirectoryCase):
         result=Executor(self.root,self.journal).apply(panel.plan.actions)
         self.assertEqual(result.succeeded,0)
         self.assertFalse((self.root/'Edited').exists())
+
+    def _new_folder_panel(self,actions):
+        from app.core.scanner import Scanner
+        from app.ui.preview_panel import PreviewPanel
+        panel=PreviewPanel();self.addCleanup(panel.deleteLater)
+        panel.set_plan(Scanner(self.root).scan(),OrganizationPlan(str(self.root),actions))
+        rejected=[];panel.editRejected.connect(rejected.append)
+        return panel,rejected
+
+    def test_right_click_offers_new_folder_for_files_only(self):
+        self.write('a.txt','Receipt');(self.root/'Old').mkdir();self.write('Old/b.txt','Kept')
+        panel,_=self._new_folder_panel([])
+        model=panel.models[1]
+        menu=panel._file_menu(model.index_of(model._find_node('a.txt')))
+        self.addCleanup(menu.deleteLater)
+        self.assertEqual([a.text() for a in menu.actions()],['Move to new folder…'])
+        self.assertIsNone(panel._file_menu(model.index_of(model._find_node('Old'))))
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtGui import QContextMenuEvent
+        tree=panel.trees[1];tree.resize(400,300);tree.expandAll()
+        file_index=model.index_of(model._find_node('a.txt'));tree.setCurrentIndex(file_index)
+        shown=[]
+        def menu_for(index):
+            menu=panel._file_menu(index)
+            if menu is None:
+                return None
+            menu.deleteLater()  # A real menu would wait for a click; record where it opened instead.
+            return SimpleNamespace(exec=lambda pos:shown.append(index.data(Qt.UserRole).rel_path),deleteLater=lambda:None)
+        tree.file_menu=menu_for
+        # The menu key uses the selected row; a click on empty space shows no file menu.
+        tree.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Keyboard,QPoint(1,1)))
+        tree.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Mouse,tree.visualRect(file_index).center()))
+        tree.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Mouse,QPoint(5,290)))
+        self.assertEqual(shown,['a.txt','a.txt'])
+        self.assertIsNone(panel.trees[0].file_menu)
+
+    def test_rename_selects_a_files_name_without_its_extension(self):
+        for name in ['report.final.pdf','notes']:
+            self.write(name,'Text')
+        (self.root/'Old.Projects').mkdir();self.write('Old.Projects/b.txt','Kept')
+        from PySide6.QtWidgets import QAbstractItemDelegate
+        panel,_=self._new_folder_panel([])
+        panel.show();self.app.processEvents()
+        model,tree=panel.models[1],panel.trees[1]
+        expected={'report.final.pdf':'report.final','notes':'notes','Old.Projects':'Old.Projects'}
+        for path,selected in expected.items():
+            with self.subTest(path=path):
+                # Open the editor the way a double-click does; the view itself selects all text first.
+                index=model.index_of(model._find_node(path))
+                tree.setCurrentIndex(index);tree.edit(index);self.app.processEvents()
+                editor=tree.indexWidget(index)
+                self.assertEqual(editor.text(),path)
+                self.assertEqual(editor.selectedText(),selected)
+                tree.closeEditor(editor,QAbstractItemDelegate.EndEditHint.RevertModelCache)
+                self.app.processEvents()
+
+    def test_new_folder_moves_the_file_there_and_apply_creates_it(self):
+        from PySide6.QtCore import Qt
+        self.write('a.txt','Receipt');self.write('b.txt','Other')
+        panel,rejected=self._new_folder_panel([])
+        with patch('app.ui.preview_panel.QInputDialog.getText',return_value=('  Receipts  ',True)):
+            panel._ask_new_folder(panel.models[1]._find_node('a.txt'))
+        self.app.processEvents()
+        self.assertEqual(rejected,[])
+        self.assertEqual([(a.src_rel,a.dst_rel) for a in panel.plan.actions],[('a.txt','Receipts/a.txt')])
+        folder=panel.models[1]._find_node('Receipts')
+        self.assertEqual(folder.diff_state,'created_dir')
+        self.assertEqual(panel.trees[1].currentIndex().data(Qt.UserRole).rel_path,'Receipts/a.txt')
+        result=Executor(self.root,self.journal).apply(panel.plan.actions)
+        self.assertEqual(result.succeeded,1)
+        self.assertEqual((self.root/'Receipts/a.txt').read_text(),'Receipt')
+        self.assertTrue((self.root/'b.txt').exists())
+
+    def test_new_folder_for_an_already_proposed_file_goes_beside_its_new_place(self):
+        self.write('a.txt','Receipt')
+        panel,_=self._new_folder_panel([PlanAction('1','move','a.txt','Subject/a.txt')])
+        self.assertTrue(panel.move_to_new_folder(panel.models[1]._find_node('Subject/a.txt'),'2026'))
+        self.app.processEvents()
+        self.assertEqual([(a.src_rel,a.dst_rel) for a in panel.plan.actions],[('a.txt','Subject/2026/a.txt')])
+
+    def test_new_folder_rejects_taken_or_invalid_names_without_changing_the_plan(self):
+        self.write('a.txt','Receipt');self.write('notes','A file without an extension');(self.root/'Taxes').mkdir()
+        panel,rejected=self._new_folder_panel([])
+        node=panel.models[1]._find_node('a.txt')
+        for name in ['taxes','Notes','bad/name','CON']:
+            with self.subTest(name=name):
+                self.assertFalse(panel.move_to_new_folder(node,name))
+        with patch('app.ui.preview_panel.QInputDialog.getText',return_value=('Ignored',False)):
+            panel._ask_new_folder(node)
+        self.app.processEvents()
+        self.assertEqual(panel.plan.actions,[])
+        self.assertEqual(len(rejected),4)
+        self.assertIn('already in this folder',rejected[0])
+        self.assertIn("can't be used as a folder name",rejected[2])
 
 
 if __name__ == '__main__':

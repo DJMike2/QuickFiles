@@ -190,6 +190,15 @@ class ContextAndIdentityTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 planner._add_destination(path,p,{1,2},{'document'})
 
+    def test_protected_destinations_are_checked_after_normalizing_windows_separators(self):
+        planner = Planner(None)
+        planner._protected, planner._file_paths = ['repo'], set()
+        p = Profile('Reference notes', 'topic', [], 'Reference notes', '')
+        for path in ('Repo/Notes', r'Repo\Notes', r'REPO\Notes'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'protected application/project folder'):
+                planner._add_destination(path, p, {1, 2}, {'document'})
+        self.assertEqual(planner.destinations, {})
+
     def test_empty_existing_music_folder_accepts_one_known_audio_file(self):
         (self.root / 'Music').mkdir()
         self.write('Artist - Song.mp3', 'ID3 media fixture')

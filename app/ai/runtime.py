@@ -1,15 +1,17 @@
 """One local model server for grounded planning, independent review and semantic search."""
 from datetime import date
 import json
+import logging
 import re
 
 from app.ai.llm_server import ContextTooLargeError, IncompleteResponseError, LLMServer, LLMServerError
 from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, FOLDER_PLAN_PROMPT,
-                            LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT,
+                            LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
                             CATALOG_PROMPT, GROUPS_PROMPT, MATCH_PROMPT, REVIEW_PROMPT)
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
 
 SEARCH_SORTS = ['relevance', 'newest', 'oldest', 'largest', 'smallest']
+log = logging.getLogger(__name__)
 
 
 class SummaryGroundingError(LLMServerError):
@@ -86,8 +88,7 @@ class AIRuntime:
                 sample, basis, schema, feedback, status_cb, cancelled)
             if value is not None:
                 return value
-            if status_cb:
-                status_cb('Checking summary evidence again…')
+            log.debug('Retrying file summary after evidence validation: %s', feedback)
         raise SummaryGroundingError(f'The local model returned an ungrounded file summary: {feedback}')
 
     def _summarize_attempt(self, sample, basis, schema, feedback, status_cb, cancelled):
@@ -188,13 +189,14 @@ class AIRuntime:
             'scope': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'maxLength': 80}},
             'topic': {'type': 'string', 'maxLength': 96},
             'quote': {'type': 'string', 'maxLength': 140}}
-        item_schema = {'type': 'object', 'additionalProperties': False,
-            'properties': properties, 'required': list(properties)}
+        from app.ai.evidence import literal_passages
         local_rows = [{**row, 'id': i} for i, row in enumerate(rows, 1)]
         keys = [str(i) for i in range(1, len(rows)+1)]
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {'profiles': {
             'type': 'object', 'additionalProperties': False,
-            'properties': {key: item_schema for key in keys}, 'required': keys}},
+            'properties': {key: {'type':'object', 'additionalProperties':False,
+                'properties': {**properties, 'quote': {'enum':['', *literal_passages(row['evidence'])]}},
+                'required':list(properties)} for key,row in zip(keys, rows)}, 'required': keys}},
             'required': ['profiles']}
         try:
             raw = self._generate(CATALOG_PROMPT, json.dumps({'items': local_rows}, ensure_ascii=False),
@@ -216,15 +218,17 @@ class AIRuntime:
 
     def propose_groups(self, rows, existing, status_cb=None, cancelled=None):
         local_rows = [{**row, 'id': i} for i, row in enumerate(rows, 1)]
+        max_groups = max(1, min(18, len(rows)//2))
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {'groups': {
-            'type': 'array', 'maxItems': 6, 'items': {'type': 'object', 'additionalProperties': False,
+            'type': 'array', 'maxItems': max_groups, 'items': {'type': 'object', 'additionalProperties': False,
                 'properties': {'path': {'type': 'string', 'maxLength': 80},
                     'purpose': {'type': 'string', 'maxLength': 160}, 'members': {'type': 'array',
                         'minItems': 2, 'items': {'enum': list(range(1, len(rows)+1))}}},
                 'required': ['path', 'purpose', 'members']}}}, 'required': ['groups']}
         try:
             raw = self._generate(GROUPS_PROMPT, json.dumps({'files': local_rows, 'existing': existing},
-                ensure_ascii=False), status_cb, cancelled, schema=schema, max_tokens=1536, temperature=0)
+                ensure_ascii=False), status_cb, cancelled, schema=schema,
+                max_tokens=max(512, 192*max_groups+128), temperature=0)
         except (ContextTooLargeError, IncompleteResponseError):
             if len(rows) <= 2:
                 raise LLMServerError('The local model could not finish grouping these files')
@@ -247,12 +251,12 @@ class AIRuntime:
             raise LLMServerError('The local model returned invalid shared groups') from exc
 
     def choose_destination(self, file, destinations, status_cb=None, cancelled=None):
-        from app.ai.evidence import compact
+        from app.ai.evidence import compact, literal_passages
         paths = [row['path'] for row in destinations]
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {
             'folder': {'enum': ['', *paths]}, 'match': {'enum': ['clear', 'uncertain']},
             'reason': {'type': 'string', 'maxLength': 240},
-            'evidence': {'type': 'string', 'maxLength': 140}},
+            'evidence': {'enum': ['', *literal_passages(file['evidence'])]}},
             'required': ['folder', 'match', 'reason', 'evidence']}
         try:
             raw = self._generate(MATCH_PROMPT, json.dumps({'file': file, 'destinations': destinations},
@@ -285,6 +289,7 @@ class AIRuntime:
         if not files:
             return {}
         keys = [str(i) for i in range(1, len(files) + 1)]
+        from app.ai.evidence import literal_passages
         paths = [row['path'] for row in existing]
         item = {'type': 'object', 'additionalProperties': False, 'properties': {
             'verdict': {'enum': ['keep', 'hold']}, 'reason': {'type': 'string', 'maxLength': 200},
@@ -293,7 +298,9 @@ class AIRuntime:
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {
             'coherent': {'type': 'boolean'}, 'reuse_existing': {'enum': ['', *paths]},
             'decisions': {'type': 'object', 'additionalProperties': False,
-                          'properties': {key: item for key in keys}, 'required': keys}},
+                          'properties': {key: {**item, 'properties':{**item['properties'],
+                              'evidence':{'enum':['', *literal_passages(file['evidence'])]}}}
+                              for key,file in zip(keys, files)}, 'required': keys}},
             'required': ['coherent', 'reuse_existing', 'decisions']}
         held = lambda reason: {f['id']: {'verdict': 'hold', 'reason': reason, 'evidence': ''} for f in files}
         try:
@@ -351,8 +358,7 @@ class AIRuntime:
                         unsupported.append(file['id'])
                 result[file['id']] = decision
             if unsupported and _retry:
-                if status_cb:
-                    status_cb('Checking independent review evidence again…')
+                log.debug('Retrying independent review for unsupported file IDs: %s', unsupported)
                 corrected = self.review_destination(files, destination, existing, status_cb, cancelled, _retry=False)
                 for identifier in unsupported:
                     result[identifier] = corrected[identifier]
@@ -418,7 +424,11 @@ class AIRuntime:
             'modified_before': {'type': 'string', 'maxLength': 10},
             'sort': {'enum': SEARCH_SORTS},
         }}
-        schema['required'] = list(schema['properties'])
+        # Filters are optional so a plain topic search does not spend tokens writing empty fields.
+        schema['required'] = ['query', 'keywords']
+        defaults = {'kinds': [], 'extensions': [], 'exclude_extensions': [], 'exclude_terms': [],
+                    'min_size_mb': 0., 'max_size_mb': 0., 'modified_after': '', 'modified_before': '',
+                    'sort': 'relevance'}
         today = today or date.today()
         settings = self.model_manager.search_settings
         try:
@@ -428,6 +438,7 @@ class AIRuntime:
             value = json.loads(raw)
             if not isinstance(value, dict) or not isinstance(value.get('query'), str):
                 raise ValueError('Missing rewritten query')
+            value = {**defaults, **value}
             for key in ('keywords', 'kinds', 'extensions', 'exclude_extensions', 'exclude_terms'):
                 if not isinstance(value.get(key), list) or any(not isinstance(x, str) for x in value[key]):
                     raise ValueError('Invalid query filters')
@@ -471,6 +482,44 @@ class AIRuntime:
         except (LLMServerError, InterruptedError):
             self.shutdown()
             raise
+
+    def review_results(self, query, files, status_cb=None, cancelled=None):
+        """Final check of retrieved files against the request as typed; returns the keys to show."""
+        if not files:
+            return set()
+        try:
+            return self._review_results(query, files, status_cb, cancelled)
+        except (LLMServerError, InterruptedError):
+            self.shutdown()
+            raise
+
+    def _review_results(self, query, files, status_cb, cancelled):
+        ids = ' | '.join(json.dumps(str(index)) for index in range(1, len(files) + 1))
+        # Only candidate ids can be written, so the answer is short and always parseable.
+        grammar = 'root ::= "[" ( id ( "," id )* )? "]"\nid ::= ' + ids
+        rows = [{'id': index, **{k: v for k, v in file.items() if k != 'key'}}
+                for index, file in enumerate(files, 1)]
+        user = json.dumps({'request': query[:1000], 'candidates': rows}, ensure_ascii=False, separators=(',', ':'))
+        try:
+            raw = self._generate(SEARCH_REVIEW_PROMPT, user, status_cb, cancelled, grammar=grammar,
+                                 max_tokens=3 * len(files) + 8,
+                                 temperature=self.model_manager.search_settings['temperature'])
+        except (ContextTooLargeError, IncompleteResponseError):
+            if len(files) <= 1:
+                return {file['key'] for file in files}  # Retrieval already vouched for it.
+            middle = len(files) // 2
+            return (self._review_results(query, files[:middle], status_cb, cancelled)
+                    | self._review_results(query, files[middle:], status_cb, cancelled))
+        try:
+            listed = {int(index) for index in json.loads(raw)}
+        except (ValueError, TypeError) as exc:
+            raise LLMServerError('The local model returned an invalid search review') from exc
+        return {file['key'] for index, file in enumerate(files, 1) if index in listed}
+
+    def interrupt(self):
+        server = self._server
+        if server is not None:
+            server.interrupt()
 
     def shutdown(self):
         if self._server:

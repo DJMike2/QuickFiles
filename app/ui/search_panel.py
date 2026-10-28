@@ -27,6 +27,7 @@ Python comments above are illustrative; real .json files cannot contain // or
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -37,6 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.search_graph import SearchGraphWidget
+
+log = logging.getLogger(__name__)
 
 QUERY_LIMIT = 80
 SIDEBAR_WIDTH = 340
@@ -442,8 +445,10 @@ class SearchPanel(QWidget):
             return
         target = Path(path)
         if not target.is_file():
+            log.warning('Cannot open search result; file is unavailable: %s', path)
             QMessageBox.warning(self, "File unavailable", "File not found:\n" + path)
             return
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.resolve()))):
+            log.warning('Desktop service could not open file: %s', target)
             QMessageBox.warning(self, "Cannot open file", "Could not open:\n" + path)
 

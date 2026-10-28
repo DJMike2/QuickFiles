@@ -2,6 +2,7 @@
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 from app.config import app_data_path
@@ -48,6 +49,30 @@ def resolve_safe(path: Path) -> Path:
     return path.expanduser().resolve()
 
 
+# Resolving every protected root again for every file dominated search indexing. Results are
+# kept briefly per root path, so a changed environment or a new link is noticed within seconds.
+_RESOLVED: dict[Path, tuple[float, Path]] = {}
+_RESOLVE_SECONDS = 2.
+
+
+def _resolved(root: Path) -> Path:
+    now = time.monotonic()
+    cached = _RESOLVED.get(root)
+    if cached is None or now - cached[0] > _RESOLVE_SECONDS:
+        cached = _RESOLVED[root] = (now, resolve_safe(root))
+    return cached[1]
+
+
+def _within(path: Path, root: Path) -> bool:
+    """path.is_relative_to(root) for resolved paths, without building every parent path."""
+    parts, prefix = path.parts, root.parts
+    if len(prefix) > len(parts):
+        return False
+    if sys.platform == "win32":
+        return all(a.casefold() == b.casefold() for a, b in zip(parts, prefix))
+    return parts[:len(prefix)] == prefix
+
+
 def blocked_roots() -> list[Path]:
     if sys.platform != "win32":
         roots = [Path(value) for value in UNIX_BLOCKED_ROOTS]
@@ -89,7 +114,7 @@ def _windows_profile_roots() -> list[Path]:
 
 def is_inside_root(path: Path, root: Path) -> bool:
     try:
-        return resolve_safe(path).is_relative_to(resolve_safe(root))
+        return _within(resolve_safe(path), _resolved(root))
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -99,7 +124,7 @@ def is_blocked(path: Path) -> bool:
         canonical = resolve_safe(path)
         if sys.platform == "win32" and len(canonical.parts) > 1 and canonical.parts[1].casefold() in _WIN_EVERY_DRIVE:
             return True
-        return any(canonical.is_relative_to(resolve_safe(root)) for root in blocked_roots())
+        return any(_within(canonical, _resolved(root)) for root in blocked_roots())
     except (OSError, RuntimeError, ValueError):
         return True
 
@@ -170,7 +195,7 @@ def _checked_local_path(root: Path, path: Path) -> Path:
     enforce_not_blocked(path)
     if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise BlockedPathError(f"Links are not movable: {path}")
-    if _inside_link(path, resolve_safe(root)):
+    if _inside_link(path, _resolved(root)):
         raise BlockedPathError(f"Path is inside a link: {path}")
     if _protected_filename(path.name):
         raise BlockedPathError(f"Protected file: {path.name}")

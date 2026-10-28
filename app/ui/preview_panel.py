@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import copy
 from html import escape
+import sys
 import uuid
 from pathlib import Path, PurePosixPath
 
 from PySide6.QtCore import QAbstractItemModel, QMimeData, QModelIndex, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPen
+from PySide6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QFrame, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy, QSplitter,
-    QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QVBoxLayout, QWidget,
+    QAbstractItemView, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QScrollArea, QSizePolicy,
+    QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeView, QVBoxLayout, QWidget,
 )
 
 from app.ai.schema import OrganizationPlan, PlanAction
+from app.core.file_kinds import type_label
 from app.core.naming import is_valid_filename
 from app.core.simulator import Simulator
 from app.core.validator import Validator
@@ -27,6 +29,13 @@ STATES = {
 STRUCK = {"removed"}
 
 
+def _display_reason(action):
+    manual = {'Destination edited in preview', 'Renamed in preview', 'Moved in preview'}
+    if action.reason in manual:
+        return action.reason
+    return 'Grouped with related files.'
+
+
 def _tooltip(node, after):
     action = node.action
     if action and not node.is_dir:
@@ -34,9 +43,9 @@ def _tooltip(node, after):
         if action.category:
             lines.append(f"  Category: {action.category}")
         if action.reason:
-            lines.append(f"  Reason: {action.reason}")
+            lines.append(f"  Reason: {_display_reason(action)}")
         if after:
-            lines += ["", "✏  Double-click to rename, or drag to move"]
+            lines += ["", "✏  Double-click to rename, drag to move,", "    or right-click to move it into a new folder"]
         return "\n".join(lines)
     if node.diff_state == "created_dir":
         files = sum(1 for child in node.children if not child.is_dir)
@@ -113,8 +122,15 @@ class DiffItemDelegate(QStyledItemDelegate):
         return editor
 
     def setEditorData(self, editor, index):
-        editor.setText(str(index.data(Qt.EditRole) or ""))
+        name = str(index.data(Qt.EditRole) or "")
+        editor.setText(name)
+        node = index.data(Qt.UserRole)
+        # Files select only the name before the extension; the extension stays editable.
+        stem = name.rfind(".") if node is not None and not node.is_dir else -1
         editor.selectAll()
+        if stem > 0:
+            # The view selects all text after this returns, so narrow the selection afterwards.
+            QTimer.singleShot(0, editor, lambda: editor.setSelection(0, stem))
 
     def updateEditorGeometry(self, editor, option, index):
         rect = option.rect.adjusted(2, 0, 0, 0)
@@ -225,6 +241,11 @@ class DiffTreeModel(QAbstractItemModel):
         new_rel = f"{folder}/{node.name}" if folder else node.name
         return bool(self.move_to(node, new_rel, index))
 
+    def index_of(self, node):
+        if node is None or node.parent is None:
+            return QModelIndex()
+        return self.createIndex(node.parent.children.index(node), 0, node)
+
     def _find_node(self, rel_path):
         pending = [self.root] if self.root else []
         while pending:
@@ -246,6 +267,19 @@ class DiffTreeModel(QAbstractItemModel):
 
 class _FolderTree(QTreeView):
     """Any click left of a folder's name opens or closes it, not just the small arrow."""
+    file_menu = None  # callable(index) -> QMenu or None
+
+    def contextMenuEvent(self, event):
+        keyboard = event.reason() == QContextMenuEvent.Keyboard
+        index = self.currentIndex() if keyboard else self.indexAt(event.pos())
+        menu = self.file_menu(index) if self.file_menu and index.isValid() else None
+        if menu is None:
+            super().contextMenuEvent(event)
+            return
+        # The menu key opens it under the selected row instead of wherever the pointer is.
+        menu.exec(self.viewport().mapToGlobal(self.visualRect(index).bottomLeft()) if keyboard
+                  else event.globalPos())
+        menu.deleteLater()
 
     def _margin_folder(self, event):
         index = self.indexAt(event.position().toPoint())
@@ -317,7 +351,7 @@ class PreviewPanel(QWidget):
                 self.legend.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
                 header.addWidget(self.legend)
                 # The hint absorbs any shortage of width so the legend is never covered.
-                hint = QLabel("✏ Double-click: rename · Drag: move")
+                hint = QLabel("✏ Double-click: rename · Drag: move · Right-click: new folder")
                 hint.setStyleSheet("font-size:10px; color:#888; font-style:italic; margin-left:6px;")
                 hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
                 header.addWidget(hint, 1)
@@ -344,6 +378,7 @@ class PreviewPanel(QWidget):
             tree.setModel(model)
             if editable:
                 model.move_to = self._move
+                tree.file_menu = self._file_menu
                 tree.setDragEnabled(True)
                 tree.setAcceptDrops(True)
                 tree.setDropIndicatorShown(True)
@@ -404,8 +439,7 @@ class PreviewPanel(QWidget):
             color, text = ("#555577" if self._dark else "#9090a0"), "#ccccdd"
         self.badge.setStyleSheet(f"font-size:11px; font-weight:700; padding:1px 7px; "
                                  f"border-radius:9px; background:{color}; color:{text};")
-        held = len(self.plan.review.get('held', {})) if self.plan else 0
-        self.badge.setText(f"{count:,} changes" + (f" · {held:,} held by review" if held else ''))
+        self.badge.setText(f"{count:,} changes")
         self.badge.show()
 
     def _show_details(self, node):
@@ -422,7 +456,7 @@ class PreviewPanel(QWidget):
             return
         self._row("Name", node.name)
         self._row("Path", node.rel_path or "/")
-        self._row("Type", "Folder" if node.is_dir else "File")
+        self._row("Type", self._type(node))
         state = STATES.get(node.diff_state)
         self._row("Status", state[0] if state else "Unchanged",
                   (state[2] if self._dark else state[1]) if state else "#888")
@@ -436,9 +470,21 @@ class PreviewPanel(QWidget):
             self.details.addWidget(line)
             self._row("From", action.src_rel)
             self._row("To", action.dst_rel)
-            self._row("Category", action.category)
-            self._row("Reason", action.reason)
+            self._row("Reason", _display_reason(action))
         self.details.addStretch()
+
+    def _type(self, node):
+        label = type_label(node.name, is_dir=node.is_dir)
+        if node.is_dir or self.inventory is None or sys.platform == "win32" \
+                or type_label(node.name, executable=True) == label:
+            return label
+        # A name with no extension: its permission tells a program apart.
+        source = node.action.src_rel if node.action else node.rel_path
+        try:
+            mode = Path(self.inventory.root).joinpath(*source.split("/")).stat().st_mode
+        except OSError:
+            return label
+        return type_label(node.name, executable=bool(mode & 0o111))
 
     def _row(self, label, value, color=""):
         row = QWidget()
@@ -524,6 +570,49 @@ class PreviewPanel(QWidget):
         if not changed:
             return False
         return self._commit(actions)
+
+    def _file_menu(self, index):
+        node = index.data(Qt.UserRole)
+        if self.plan is None or node is None or node.is_dir:
+            return None
+        menu = QMenu(self)
+        menu.addAction("Move to new folder…", lambda: self._ask_new_folder(node))
+        return menu
+
+    def _ask_new_folder(self, node):
+        name, accepted = QInputDialog.getText(self, "Move to new folder", f"New folder for {node.name}:")
+        if accepted and name.strip():
+            self.move_to_new_folder(node, name.strip())
+
+    def move_to_new_folder(self, node, name):
+        """Put a file into a new folder beside where it sits in the After tree."""
+        if not is_valid_filename(name):
+            self.editRejected.emit(f'"{name}" can\'t be used as a folder name')
+            return False
+        siblings = node.parent.children if node.parent else []
+        if any(child is not node and child.name.casefold() == name.casefold() for child in siblings):
+            self.editRejected.emit(f'something named "{name}" is already in this folder')
+            return False
+        parent = node.parent.rel_path if node.parent else ""
+        target = f"{parent}/{name}/{node.name}" if parent else f"{name}/{node.name}"
+        if not self._move(node, target):
+            return False
+        # Runs after the edit is published (queued behind it), so the moved file is shown.
+        QTimer.singleShot(0, lambda: self._reveal(target))
+        return True
+
+    def _reveal(self, rel_path):
+        model, tree = self.models[1], self.trees[1]
+        node = model._find_node(rel_path)
+        if node is None:
+            return
+        index = model.index_of(node)
+        parent = index.parent()
+        while parent.isValid():
+            tree.expand(parent)
+            parent = parent.parent()
+        tree.setCurrentIndex(index)
+        tree.scrollTo(index)
 
     def _move(self, node, new_rel, index=None):
         if self.plan is None or self._pending_edit:
