@@ -50,7 +50,9 @@ Planning uses the tested prompts and settings in `app/ai/prompts.py` and
 
 The model does not supply confidence percentages. Relative paths, protected
 locations and destination collisions are validated before preview and again
-before applying. Double-click names in the After tree to edit a proposal.
+before applying. Double-click names in the After tree to edit a proposal, or drag them to move.
+Right-click a file and choose **Move to new folder…** to type a folder name; the file moves into
+that new folder beside it in the preview, and Apply creates the folder.
 
 The [ordered organizer process](docs/organizer-process.md) documents the organizer pipeline.
 
@@ -121,9 +123,20 @@ binaries and packages native artifacts. Generated binaries are excluded from Git
 Open **AI Search**, choose its search folder, and describe the files you want.
 The local Qwen model turns the request into a concise query and explicit filters.
 A small All-MiniLM-L6-v2 embedding model retrieves files by meaning. Filename
-terms also help preserve exact identifiers. Results appear in the graph; the
-conversation panel reports the actual number found and how many indexed files
-were searched. Counts are generated after retrieval, without a second LLM call.
+terms also help preserve exact identifiers: when a request names a numbered item
+(STAT 415, homework 2) and some files carry it, only those are shown. Clear outliers
+far below the best match, and media files whose name and folder share no word with
+the request, are left out. Files beside a match in a folder named for the request
+(Travel, Health) are considered too, so "japan trip" also reaches the flight booking
+that never says Japan. Qwen then reviews the top 10 matches against the request
+as typed, answering only with the IDs of the files that fit (usually under a second);
+requests that only name a type, size, date or order skip this review. If the review
+fails, the unreviewed matches are shown. The text model drafts several tokens at a time
+with its built-in multi-token-prediction layers (`"speculative": "draft-mtp"` in
+`models/settings.json`), which makes its answers about 1.6x faster; remove the
+setting for a model without those layers. Results appear in the graph; the
+conversation panel reports the actual number shown and how many indexed files
+were searched. Counts come from the files kept, never from model text.
 History restores the original query, answer and result graph during this session.
 
 Search is read-only and has its own folder selection. It does not call organizer
@@ -137,10 +150,16 @@ or separate vector database is used. Embeddings and short excerpts are cached
 in `search.sqlite3` in application data. Unchanged files reuse their vectors;
 changed, added and deleted files are refreshed on later searches.
 
-This first version uses filenames, paths and bounded text excerpts (up to 600
-characters), with an English embedding model. It does not perform OCR or inspect
-image/audio content. It supports explicit file-type and exclusion filters;
-dates remain part of the search text rather than strict filesystem-date filters.
+Search uses filenames, paths and bounded text excerpts, with an English embedding
+model. When the vision model (Qwen3-VL) is installed, photos and screenshots,
+videos (four frames spread across the clip) and PDFs without a text layer (the
+first page, typed or handwritten) are described once while indexing, so they can be
+found by what they show and by the text in them. This takes a few seconds per new
+file; descriptions are cached until the file changes. The search model is unloaded
+while descriptions are written, because both models do not fit together on an 8 GB
+GPU. Audio is not inspected, and HEIC or camera RAW photos remain name-only.
+Pillow, pypdfium2 and PyAV (bundled FFmpeg) read the images, scans and video frames.
+It supports explicit file-type and exclusion filters, size limits and date filters.
 Messages summarize actual retrieval results; multi-turn conversational reasoning
 is not part of this version. All inference and indexed content stay local.
 

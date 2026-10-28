@@ -1,6 +1,7 @@
 """Steps 6–9: destination evidence, shared groups, assignment and independent review."""
 from collections import Counter, defaultdict
 from dataclasses import asdict
+import logging
 from pathlib import Path, PurePosixPath
 import re
 
@@ -13,8 +14,10 @@ from app.core.organization import (Profile, ProfileCache, course_codes, explicit
                                    profile_key, legacy_profile_key,
                                    scope_compatible, scope_matches)
 from app.core.preparation import Preparation
-from app.core.file_kinds import folder_kind
+from app.core.file_kinds import folder_kind, KIND_LABELS
 from app.core.identities import COURSE, same_course, same_scope
+
+log = logging.getLogger(__name__)
 
 KIND_FOLDERS = {'audio': 'Audio', 'image': 'Images', 'video': 'Videos', 'code': 'Code',
                 'ai model': 'AI Models', 'disk image': 'Disk Images', 'archive': 'Archives'}
@@ -81,19 +84,19 @@ class Planner:
         for row in rows:
             self._check_cancelled()
             source = compact(row['evidence'])
-            if row.get('origin') == 'file' and (course_codes(source) or explicit_client(source)):
+            if (row.get('origin') == 'file' and row.get('basis') == 'content'
+                    and row.get('explicit_identity')):
                 # Explicit identities need no probabilistic reinterpretation.
                 found[row['id']] = Profile.from_result({'description': source[:180], 'scope_kind': 'topic',
-                    'scope': [], 'topic': row.get('subject', '')[:96], 'quote': source[:100]}, source)
+                    'scope': [], 'topic': row.get('subject', '')[:96], 'quote': source[:100]}, row['evidence'])
                 continue
-            if row.get('origin') == 'file' and row.get('kind') in {'audio', 'image', 'video', 'ai model', 'disk image'}:
+            if (row.get('origin') == 'file' and row.get('basis') != 'content'
+                    and row.get('kind') in KIND_LABELS):
                 found[row['id']] = Profile('Loose ' + row['kind'] + ' files', 'kind', [],
                                            row['kind'], source[:100])
                 continue
             key = profile_key(self.runtime, {k: v for k, v in row.items() if k != 'id'})
             value = cache.get_profile(key)
-            if value is None:
-                value = cache.get_profile(legacy_profile_key(self.runtime, {k: v for k, v in row.items() if k != 'id'}))
             try:
                 if value is None:
                     raise ValueError('Not cached')
@@ -101,8 +104,10 @@ class Planner:
                 cache.put_profile(key, value)
             except (ValueError, TypeError, KeyError, AttributeError):
                 pending.append((row, key))
-        for offset in range(0, len(pending), 4):
-            batch = pending[offset:offset+4]
+        for offset in range(len(pending)):
+            # One item per semantic judgment: unrelated neighbours and filename
+            # order must not change a document's identity or folder purpose.
+            batch = pending[offset:offset+1]
             self.progress_cb(f'Describing subjects and folder purposes… {offset+1}/{len(pending)}')
             values = self.runtime.profile_items([row for row, key in batch], self.progress_cb, self.cancelled)
             for (row, key), value in zip(batch, values):
@@ -135,6 +140,38 @@ class Planner:
             if length == 0 or '/'.join(parts[:length]) in directories:
                 return len(parts) - length
 
+    def _destination_parts(self, value, *, existing=False):
+        parts = relative_parts(value)
+        path = '/'.join(parts)
+        if self._off_limits(path):
+            protected = next(p for p in self._protected
+                             if path.casefold() == p or path.casefold().startswith(p + '/'))
+            parent = '/'.join(parts[:len(protected.split('/'))])
+            raise ValueError(f'{path!r} is inside the protected application/project folder {parent!r}')
+        levels = self._new_levels(parts)
+        if not existing and levels > 2:
+            raise ValueError(f'{path!r} would create {levels} new folder levels; the limit is 2')
+        return parts
+
+    def _group_path(self, value):
+        """Preserve existing anchors and the most specific two new components.
+
+        Validate the original path before shortening, so a protected/traversal
+        suggestion cannot be laundered into a permissible destination.
+        """
+        parts = relative_parts(value)
+        path = '/'.join(parts)
+        if self._off_limits(path):
+            self._destination_parts(path)
+        directories = getattr(self, '_existing_directories', set())
+        anchor = max((i for i in range(len(parts)+1)
+                      if i == 0 or '/'.join(parts[:i]) in directories))
+        if len(parts)-anchor > 2:
+            parts = parts[:anchor] + parts[-2:]
+            log.debug('Normalized suggested destination %r to %r', value, '/'.join(parts))
+        self._destination_parts('/'.join(parts))
+        return '/'.join(parts)
+
     def _folder_rows(self, inventory, first_id):
         """Only direct, checked samples: parent containers cannot inherit child identities."""
         rows, metadata = [], {}
@@ -159,12 +196,14 @@ class Planner:
                     before = file.stat()
                     if entry.is_conservative or before.st_size == 0 or before.st_size != entry.size_bytes:
                         continue
-                    evidence = extract_evidence(entry, inventory.content_read_bytes)
+                    evidence = extract_evidence(entry, inventory.content_read_bytes, cancelled=self.cancelled)
                     if Preparation._identity(before) != Preparation._identity(file.stat()):
                         continue
                     samples.append((f'Readable sample: {evidence.text[:1600]}' if evidence.status == 'content'
                                     else f'Filename-only sample: {entry.filename}')
                                    + f'\nFile kind: {kind_of(entry)}')
+                except InterruptedError:
+                    raise
                 except (OSError, ValueError):
                     continue
             source = 'Existing folder: ' + path + '\n' + '\n'.join(samples)
@@ -176,10 +215,28 @@ class Planner:
         return rows, metadata
 
     @staticmethod
+    def _kind(entry, summary):
+        # A readable saved webpage is document evidence, not automatically a
+        # software subject merely because its container uses HTML markup.
+        if summary.basis == 'content' and entry.extension in {'.html', '.htm'}:
+            return 'document'
+        return kind_of(entry)
+
+    @staticmethod
     def _source(entry, summary):
         return (summary.subject + '\n' + summary.summary + '\nExplicit identifiers: '
-                + '; '.join(summary.identifiers) + '\nFile kind: ' + kind_of(entry)
+                + '; '.join(summary.identifiers) + '\nFile kind: ' + Planner._kind(entry, summary)
                 + (('\nFilename: ' + entry.filename) if summary.basis != 'content' else ''))
+
+    @staticmethod
+    def _matching_file(row):
+        # Readable evidence must not compete with a misleading basename/path at
+        # a later stage after preparation has already excluded that name.
+        fields = ('id','kind','basis','subject','evidence')
+        result = {k:row[k] for k in fields if k in row}
+        if row['basis'] != 'content':
+            result['name'] = row['name']
+        return result
 
     @staticmethod
     def _witness(row, destination):
@@ -198,9 +255,7 @@ class Planner:
         return row['profile'].quote
 
     def _add_destination(self, path, profile, members, families, *, existing=False, source=''):
-        parts = relative_parts(path)
-        if (not existing and self._new_levels(parts) > 2) or self._off_limits(path):
-            raise ValueError('Destination is protected or too deep')
+        parts = self._destination_parts(path, existing=existing)
         path = '/'.join(parts)
         if (not existing and path in getattr(self, '_existing_directories', set())
                 and path not in self.destinations):
@@ -239,15 +294,18 @@ class Planner:
             return row['kind'] in destination['families']
         if row['id'] in destination['members']:
             return True
-        if row['kind'] in {'audio', 'image', 'video', 'code', 'ai model', 'disk image', 'archive'}:
+        if row['kind'] in {'audio', 'image', 'video', 'ai model', 'disk image', 'archive', 'code'} and row['basis'] != 'content':
+            if folder_kind(target.topic) == row['kind'] and destination['families'] == {row['kind']}:
+                return True
             if row['basis'] != 'content':
                 words = {w for w in re.findall(r'\w+', (path + ' ' + target.topic).casefold())
                          if len(w) >= 4 and w not in {'files', 'documents', 'notes'}}
                 return any(word in row['name'].casefold() for word in words)
             return row['kind'] in destination['families']
-        return not destination['families'] or bool(destination['families'] & {'document', 'spreadsheet', 'presentation'})
+        return not destination['families'] or bool(destination['families'] & {'document', 'spreadsheet', 'presentation', 'code', 'unknown'})
 
-    def _groups(self, rows):
+    @staticmethod
+    def _partition_rows(rows):
         partitions = []
         for row in rows:
             p = row['profile']
@@ -255,15 +313,22 @@ class Planner:
                 continue
             scoped = p.scope_kind in {'course', 'client', 'project'}
             family = ('scoped' if scoped else 'unreadable_documents'
-                      if row['basis'] == 'filename' and row['kind'] in {'document', 'spreadsheet', 'presentation'}
-                      else row['kind'] if row['kind'] in KIND_FOLDERS else 'documents')
+                      if row['basis'] != 'content' and row['kind'] in {'document', 'spreadsheet', 'presentation'}
+                      else row['kind'] if row['basis'] != 'content' and row['kind'] in KIND_FOLDERS else 'documents')
+            signature = (p.scope_kind, tuple(p.scope))
             for group in partitions:
-                if group['family'] == family and scope_compatible([r['profile'] for r in group['rows']] + [p]):
+                # Compatibility depends only on scope kind and scope values.
+                # Repeating identical scopes cannot change its all-pairs verdict.
+                if group['family'] == family and scope_compatible([*group['scopes'].values(), p]):
                     group['rows'].append(row)
+                    group['scopes'].setdefault(signature, p)
                     break
             else:
-                partitions.append({'family': family, 'rows': [row]})
-        for group in partitions:
+                partitions.append({'family': family, 'rows': [row], 'scopes': {signature: p}})
+        return [{'family': group['family'], 'rows': group['rows']} for group in partitions]
+
+    def _groups(self, rows):
+        for group in self._partition_rows(rows):
             self._check_cancelled()
             members, family = group['rows'], group['family']
             if len(members) < 2:
@@ -291,13 +356,14 @@ class Planner:
                     continue
                 name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', label).strip().rstrip('.')[:80]
                 profile = Profile('Files explicitly identifying ' + ', '.join(first.scope),
-                                  first.scope_kind, first.scope, first.topic, first.quote)
+                                  first.scope_kind, first.scope, first.topic, first.quote,
+                                  literal_scope=all(r['profile'].literal_scope for r in members))
                 try:
                     self._add_destination(name, profile, ids, families)
                 except ValueError as exc:
-                    self._plan.warnings.append(PlanWarning('', f'Ignored scoped group: {exc}'))
+                    log.debug('Skipped suggested scoped group %r: %s', name, exc)
                 continue
-            if family in KIND_FOLDERS and family != 'archive':
+            if family in KIND_FOLDERS:
                 existing = [p for p, d in self.destinations.items() if d['existing']
                             and d['profile'].scope_kind == 'kind' and d['families'] == {family}]
                 if not existing:
@@ -305,23 +371,23 @@ class Planner:
                     self._add_destination(KIND_FOLDERS[family], profile, ids, {family})
                 continue
             offered = [{'id': r['id'], 'name': r['name'] if r['basis'] != 'content' else '',
-                        'profile': asdict(r['profile']), 'kind': r['kind'], 'evidence': r['evidence'][:900]}
+                        'profile': r['profile'].evidence_dict(), 'kind': r['kind'], 'evidence': r['evidence'][:1200]}
                        for r in members]
-            existing = [{'path': p, 'profile': asdict(d['profile'])}
-                        for p, d in self.destinations.items() if d['existing']]
+            # Unusable filing options can suppress real subjects during discovery.
+            existing = [{'path': p, 'profile': d['profile'].evidence_dict()}
+                        for p, d in self.destinations.items()
+                        if d['existing'] and any(self._compatible(row, p, d) for row in members)]
             self.progress_cb('Finding shared subjects…')
             proposals = self.runtime.propose_groups(offered, existing, self.progress_cb, self.cancelled)
             for proposal in proposals:
                 try:
-                    parts = relative_parts(proposal['path'])
-                    if self._new_levels(parts) > 2 or self._off_limits('/'.join(parts)):
-                        raise ValueError('Destination is protected or too deep')
+                    path = self._group_path(proposal['path'])
                 except ValueError as exc:
-                    self._plan.warnings.append(PlanWarning('', f'Ignored group: {exc}'))
+                    log.debug('Skipped suggested group %r: %s', proposal['path'], exc)
                     continue
                 chosen = set(proposal['members'])
                 if len(chosen) < 2 or not chosen <= ids:
-                    self._plan.warnings.append(PlanWarning('', 'Ignored group without two valid supporting members'))
+                    log.debug('Skipped suggested group %r: fewer than two valid supporting members', proposal['path'])
                     continue
                 included = [r for r in members if r['id'] in chosen]
                 if not scope_compatible([r['profile'] for r in included]):
@@ -334,9 +400,10 @@ class Planner:
                     if duplicate:
                         self.destinations[duplicate]['members'].update(chosen)
                     else:
-                        self._add_destination(proposal['path'], profile, chosen, {r['kind'] for r in included})
+                        self._add_destination(path, profile, chosen, {r['kind'] for r in included},
+                            source='Original proposal: '+proposal['path'])
                 except ValueError as exc:
-                    self._plan.warnings.append(PlanWarning('', f'Ignored group: {exc}'))
+                    log.debug('Skipped suggested group %r: %s', proposal['path'], exc)
 
     def plan(self, inventory):
         if not self.runtime or not self.runtime.available:
@@ -354,21 +421,26 @@ class Planner:
                 self._plan.excluded_count = inventory.total_files
                 return self._plan
             rows = []
-            for identifier, entry in enumerate(self.prepared.files, 1):
+            ordered = sorted(self.prepared.files, key=lambda entry: (
+                self.prepared.summaries[entry.rel_path].basis,
+                self.prepared.summaries[entry.rel_path].summary.casefold(), entry.extension, entry.rel_path))
+            for identifier, entry in enumerate(ordered, 1):
                 summary = self.prepared.summaries[entry.rel_path]
                 rows.append({'id': identifier, 'name': entry.filename, 'rel_path': entry.rel_path,
-                    'kind': kind_of(entry), 'basis': summary.basis, 'subject': summary.subject,
+                    'kind': self._kind(entry, summary), 'basis': summary.basis, 'subject': summary.subject,
                     'evidence': self._source(entry, summary)})
             fingerprints = {entry.rel_path: Preparation._identity(checked_path(
                 Path(inventory.root), entry.rel_path).stat()) for entry in self.prepared.files}
             folders, metadata = self._folder_rows(inventory, len(rows)+1)
             evidence_rows = [{'id': r['id'], 'origin': 'file', 'subject': r['subject'],
-                              'kind': r['kind'], 'evidence': r['evidence']} for r in rows] + folders
+                              'kind': r['kind'], 'basis':r['basis'],
+                              'explicit_identity':bool(self.prepared.summaries[r['rel_path']].identifiers),
+                              'evidence': r['evidence']} for r in rows] + folders
             profiles = self._profiles(evidence_rows)
             self._canonicalize_courses(profiles, evidence_rows)
             for row in rows:
                 row['profile'] = profiles[row['id']]
-                if row['basis'] == 'filename' and row['profile'].scope_kind not in {'course', 'client', 'project'}:
+                if row['basis'] != 'content' and row['profile'].scope_kind not in {'course', 'client', 'project'}:
                     row['profile'].scope_kind = 'kind' if row['kind'] in KIND_FOLDERS else 'topic'
                 self.catalog[row['rel_path']] = asdict(row['profile'])
             for path, meta in metadata.items():
@@ -377,7 +449,8 @@ class Planner:
                 profile = profiles[meta['id']]
                 families = set(meta['families'])
                 broad_kind = folder_kind(PurePosixPath(path).name)
-                if profile.scope_kind not in {'course', 'client', 'project', 'mixed'} and broad_kind:
+                if (profile.scope_kind not in {'course', 'client', 'project', 'mixed'} and broad_kind
+                        and len(relative_parts(path)) == 1):
                     accepted = {'document', 'spreadsheet', 'presentation'} if broad_kind == 'document' else {broad_kind}
                     if not families or families <= accepted:
                         profile.scope_kind, profile.scope, profile.topic = 'kind', [], broad_kind
@@ -406,8 +479,8 @@ class Planner:
                 decision = None
                 if existing_candidates and len(existing_candidates) != len(candidates) and not scoped_existing:
                     decision = self.runtime.choose_destination(
-                        {k: v for k, v in row.items() if k != 'profile'},
-                        [{'path': path, 'existing': True, 'profile': asdict(d['profile'])}
+                        self._matching_file(row),
+                        [{'path': path, 'existing': True, 'profile': d['profile'].evidence_dict()}
                          for path, d in existing_candidates], self.progress_cb, self.cancelled)
                     if decision['folder']:
                         candidates = existing_candidates
@@ -422,8 +495,8 @@ class Planner:
                                 'evidence': self._witness(row, destination), 'match': 'clear'}
                 else:
                     decision = self.runtime.choose_destination(
-                        {k: v for k, v in row.items() if k != 'profile'},
-                        [{'path': path, 'existing': d['existing'], 'profile': asdict(d['profile'])}
+                        self._matching_file(row),
+                        [{'path': path, 'existing': d['existing'], 'profile': d['profile'].evidence_dict()}
                          for path, d in candidates], self.progress_cb, self.cancelled)
                 if (not decision['folder'] and row['basis'] == 'filename'
                         and row['profile'].scope_kind not in {'course', 'client', 'project'}):

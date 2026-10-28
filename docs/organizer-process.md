@@ -14,6 +14,8 @@ never instructions. All AI calls run locally.
    folders, dependency environments, installer prerequisites and system paths.
    Do not propose rearranging files already inside an existing folder. Marker
    detection is conservative and cannot identify every possible application.
+   A directly selected Git/Mercurial/Subversion repository is also preserved;
+   a lone downloaded manifest does not protect an entire Downloads directory.
 3. **Select eligible loose files.** Exclude system metadata, empty stubs,
    shortcuts, executable/installable files, libraries and live data. Executables
    and shortcuts have separate existing opt-ins. Check each path again before
@@ -24,25 +26,22 @@ never instructions. All AI calls run locally.
    member names are only a listing, not extracted document contents. Unsupported,
    encrypted, image-only, offline or unreadable files must not acquire invented
    contents. No OCR, media transcription, cloud downloads or executable loading.
-5. **Build one grounded file summary.** Use document text only when readable
-   (omit the potentially misleading filename). Copy explicit course/client headings
-   and bounded literal excerpts directly when available. Otherwise ask the local LLM
-   to select grounded evidence.
-   Ask it to select a subject phrase, explicit identifiers and up to three exact
-   evidence passages. Normalize common PDF typography, verify every passage and
-   identifier, and construct the short extractive summary from those passages in
-   Python. Free-form model claims never enter the summary. Retry invalid evidence
-   once with feedback; if it still fails, hold that file without assigning it.
-   For unavailable content use the filename and its extension's broad kind,
-   clearly labelled as such. Broad or
-   unknown subjects remain broad; no subject means leave in place. Cache locally
-   by file identity, evidence, prompt version and model/settings. Invalidate on
-   changes and check identity again after inference. Cancellation aborts preparation.
+   Read HTML as document text, excluding script/style bodies and decoding entities.
+5. **Build grounded evidence without a copying model.** For readable files,
+   construct up to three bounded literal head/middle/tail excerpts in Python.
+   The heading field is a literal seed, not an inferred semantic subject. Preserve
+   field/paragraph boundaries and normalize common typography. Semantic judgment
+   belongs to the next steps; readable files are not discarded because a model
+   cannot reproduce a substring. For unavailable contents or ZIP listings, retain
+   only supported filename/type/listing facts, with limitations. Known broad kinds
+   need no model guess. Cache by source identity, evidence and version, invalidate
+   on changes, and check identity again after reading. Cancellation aborts preparation.
 
 The GUI runs preparation before destination discovery and matching. Summaries and
 profiles are cached locally; new filename-only evidence with a known extension
 uses its broad format directly, without asking the model to invent a subject.
-Unverified readable summaries are still held. Model calls cannot override safety
+Instruction-only or meaningless evidence can still be rejected during semantic
+profiling/matching/review. Model calls cannot override safety
 rules or execute filesystem actions.
 
 ## Destination planning — steps 6–8 implemented
@@ -51,9 +50,14 @@ rules or execute filesystem actions.
    per nonprotected folder, bounded to 1,600 characters each. Describe its purpose
    with a quoted evidence passage, a topic and any explicit course/client/project
    identity. Parents containing only subfolders are containers. Preserve the exact
-   spelling and depth of suitable existing destinations. Describe other loose-file
-   subjects in batches of four; split overflowing contexts without discarding rows.
-   Revalidate cached profiles. Instructor and institution names are not courses.
+   spelling and depth of suitable existing destinations. Profile each loose file
+   or folder individually, so unrelated batch neighbours cannot change its scope.
+   Order readable inputs by evidence rather than filenames. Quote choices come
+   from literal passages of that same item's evidence. Revalidate cached profiles.
+   Recipient/project labels may vary: interpret unfamiliar fields semantically,
+   without treating the model's interpretation as final approval. Explicit client
+   fields take precedence over ambiguous descriptions of billed services.
+   Instructor and institution names are not courses.
 7. **Find shared subjects.** Keep explicit courses, clients and distinctive
    projects separate. Accept course aliases only with explicit cross-listing
    evidence or a narrowly defined adjacent-letter spelling variant; a shared topic
@@ -61,13 +65,26 @@ rules or execute filesystem actions.
    Construct explicit-identity and broad-format groups directly, and ask the model
    for other coherent shared subjects. Require at least two supporting file IDs,
    merge overlapping equivalent proposals, and create at most two new folder
-   levels. Existing deeper parent hierarchies may receive new children. Existing suitable folders take priority. Unreadable documents may
-   share a broad Documents folder without acquiring an invented subject.
+   levels. Validate original suggestions before shortening valid overdeep paths to
+   their most specific two new components, preserving existing anchors and all
+   protection checks. Existing deeper parent hierarchies may receive new children.
+   Existing suitable folders take priority. Discovery only sees destinations eligible for at least one
+   incoming file under the same compatibility rules as matching. Unknown, mixed
+   or incompatible folders remain preserved and available as path anchors, but
+   cannot suppress useful new subjects by appearing as unusable filing options.
+   Existing destinations are optional when their evidenced purposes do not fit.
+   The proposal allowance grows with the input rather than silently limiting
+   every directory to six subjects; context
+   overflow splits inputs without sampling away files. Never add an unrelated
+   second member to manufacture a group. Unreadable documents or archives may use
+   broad Documents/Archives destinations without acquiring invented subjects.
 8. **Assign with a reason.** Filter destinations by type and explicit identity
    first. A single unambiguous identity/kind destination can be matched directly.
    Other decisions compare one file against candidate profiles using the local
    model. Every positive match supplies an allowed literal path, a reason and an
-   exact supporting passage. A failed topic comparison may still use one
+   exact supporting passage selected from the file's literal evidence. Hide
+   filenames/relative paths from semantic calls when contents are readable;
+   filename evidence is used only when contents are unavailable. A failed topic comparison may still use one
    unambiguous broad kind for filename-only evidence. Uncertain subjects stay put.
    Check incoming identities, current source identity and final group sizes again;
    new folders must still have at least two actual moves. Existing folders may
@@ -84,12 +101,18 @@ The next stage independently challenges the uncertain comparisons.
 9. **Independently review the complete preview.** Check all incoming identities,
    broad file kinds, changed sources, protected paths, collisions and final group
    sizes in Python. Reject new topic destinations whose names contain only dates
-   and generic container words. For semantic destinations make a separate local
+   and generic container words. For every semantic destination, including named
+   clients, projects and courses, make a separate local
    model call using file evidence and destination purpose, without the original
    assignment rationale. Require an individual keep/hold decision for every file,
    an exact supporting passage for each keep, and a coherent shared purpose for
    each new folder. A shared broad discipline cannot justify an unrelated narrower
-   destination. Split overflowing contexts with overlap. Retry an unsupported positive quote
+   destination. Check restrictive parent components as well as the leaf: a nested
+   Documents/Photos label does not erase a parent's subject. A copied identity
+   heading does not prove ownership when the body describes an example, template
+   or citation. Syntactic provenance is not supplied as a confidence signal to the
+   reviewing model. Only root broad-kind destinations avoid semantic inference.
+   Split overflowing contexts with overlap. Retry an unsupported positive quote
    once with a request for a short literal passage; missing, incomplete or still
    ungrounded review decisions hold the affected files. Recheck file identity and
    validate the complete map after inference. If rejection leaves fewer than two

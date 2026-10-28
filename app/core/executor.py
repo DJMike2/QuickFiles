@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import shutil
 import sys
@@ -13,6 +14,8 @@ from app.core.blocked_paths import checked_path, resolve_safe
 from app.core.validator import Validator
 from app.core.file_state import file_hash, identity
 from app.storage import JournalOp
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -116,6 +119,7 @@ class Executor:
             result.failed = len(report.rejected_actions)
             result.skipped = len(actions) - result.failed
             result.errors = [f'{a.src_rel or a.dst_rel}: {reason}' for a, reason in report.rejected_actions]
+            log.warning('Apply preflight failed for %s: %s', self.root, '; '.join(result.errors))
             return result
         actions = report.valid_actions
         batch_id, _ = self.journal.begin_batch(str(self.root), len(actions))
@@ -170,6 +174,7 @@ class Executor:
                 result.skipped += len(actions) - index
                 break
             except Exception as exc:
+                log.exception('Apply failed for %s -> %s', action.src_rel, action.dst_rel)
                 if op_id is not None:
                     if moved:
                         self.journal.mark_op_verification_failed(op_id, str(exc))
