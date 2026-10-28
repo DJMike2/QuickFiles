@@ -6,6 +6,7 @@ import re
 
 from app.ai.llm_server import ContextTooLargeError, IncompleteResponseError, LLMServer, LLMServerError
 from app.ai.model_runtime import ModelRuntime
+from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
 from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, FOLDER_PLAN_PROMPT,
                             LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
@@ -37,10 +38,18 @@ class AIRuntime(ModelRuntime):
         super().__init__()
         self.binary_manager = binary_manager
         self.model_manager = model_manager
+        self._organizer_decisions = DecisionCache()
 
     def _new_server(self):
+        self._organizer_decisions.clear()
         return LLMServer(self.binary_manager, self.model_manager.model_path,
                          self.model_manager.runtime_settings)
+
+    def shutdown(self):
+        try:
+            super().shutdown()
+        finally:
+            self._organizer_decisions.clear()
 
     def prestart(self, cancelled=None):
         if self.available:
@@ -224,6 +233,7 @@ class AIRuntime(ModelRuntime):
         except (ValueError, TypeError, KeyError) as exc:
             raise LLMServerError('The local model returned an invalid evidence catalog') from exc
 
+    @reuse_decision(GROUPS_PROMPT, lambda groups: bool(groups))
     def propose_groups(self, rows, existing, status_cb=None, cancelled=None):
         local_rows = [{**row, 'id': i} for i, row in enumerate(rows, 1)]
         max_groups = max(1, min(18, len(rows)//2))
@@ -258,6 +268,7 @@ class AIRuntime(ModelRuntime):
         except (ValueError, TypeError, KeyError) as exc:
             raise LLMServerError('The local model returned invalid shared groups') from exc
 
+    @reuse_decision(MATCH_PROMPT, lambda decision: bool(decision['folder']))
     def choose_destination(self, file, destinations, status_cb=None, cancelled=None):
         from app.ai.evidence import compact
         passages = quote_choices(file['evidence'])
@@ -297,6 +308,8 @@ class AIRuntime(ModelRuntime):
         except (ValueError, TypeError, KeyError) as exc:
             raise LLMServerError('The local model returned an invalid destination decision') from exc
 
+    @reuse_decision(REVIEW_PROMPT, lambda decisions: bool(decisions) and all(
+        decision['verdict'] == 'keep' for decision in decisions.values()))
     def review_destination(self, files, destination, existing, status_cb=None, cancelled=None, *, _retry=True):
         """A separate judgment receives evidence, never the assignment's original rationale."""
         from app.ai.evidence import compact
