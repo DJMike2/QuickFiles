@@ -29,10 +29,6 @@ class ExecutionResult:
     batch_id: int | None = None
 
 
-def _file_hash(path):
-    return file_hash(path)
-
-
 def safe_move(source: Path, destination: Path):
     """Move without replacing an existing file, including across volumes."""
     if destination.exists() or destination.is_symlink():
@@ -59,7 +55,7 @@ def safe_move(source: Path, destination: Path):
             copied.flush()
             os.fsync(copied.fileno())
         shutil.copystat(source, destination)
-        if _file_hash(source) != _file_hash(destination):
+        if file_hash(source) != file_hash(destination):
             raise OSError("Copy verification failed; original was preserved")
         source.unlink()
     except Exception:

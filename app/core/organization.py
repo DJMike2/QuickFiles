@@ -5,12 +5,11 @@ import json
 import re
 
 from app.ai.evidence import compact
+from app.core.identities import (COURSE, NOT_COURSES, course_codes, explicit_clients,
+                                 literal_header_identity, normalized, same_course, same_scope)
 from app.core.preparation import SummaryCache
-from app.core.file_kinds import kind_of
 
 SCOPES = ('course', 'client', 'project', 'topic', 'kind', 'unknown', 'mixed')
-from app.core.identities import (COURSE, NOT_COURSES, course_codes, explicit_client, explicit_clients, literal_header_identity,
-                                 normalized, same_course, same_scope)
 
 
 def named_field(text, value, label=None):
@@ -143,14 +142,6 @@ class ProfileCache(SummaryCache):
 def profile_key(runtime, row):
     from app.ai.prompts import CATALOG_PROMPT
     return hashlib.sha256(json.dumps(['independent-profile-v3-proof', CATALOG_PROMPT, runtime.summary_cache_key, row],
-                                     sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-
-
-def legacy_profile_key(runtime, row):
-    """The output container changed; compatible cached facts are still revalidated."""
-    from app.ai.prompts import CATALOG_PROMPT
-    previous = CATALOG_PROMPT.partition('Return JSON')[0] + 'Return JSON with profiles in exactly the supplied ID order.'
-    return hashlib.sha256(json.dumps([previous, runtime.summary_cache_key, row],
                                      sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
