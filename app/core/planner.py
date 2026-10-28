@@ -10,13 +10,12 @@ from app.ai.evidence import compact, extract_evidence
 from app.ai.llm_server import LLMServerError
 from app.ai.schema import OrganizationPlan, PlanAction, PlanWarning
 from app.core.blocked_paths import checked_path
+from app.core.file_kinds import folder_kind, kind_of, KIND_LABELS
+from app.core.file_state import identity
+from app.core.identities import COURSE, course_codes, normalized, same_course, same_scope
 from app.core.naming import relative_parts
-from app.core.organization import (Profile, ProfileCache, course_codes, explicit_client, kind_of, normalized,
-                                   profile_key, legacy_profile_key,
-                                   scope_compatible, scope_matches)
+from app.core.organization import Profile, ProfileCache, profile_key, scope_compatible, scope_matches
 from app.core.preparation import Preparation
-from app.core.file_kinds import folder_kind, KIND_LABELS
-from app.core.identities import COURSE, same_course, same_scope
 
 log = logging.getLogger(__name__)
 
@@ -212,7 +211,7 @@ class Planner:
                     if entry.is_conservative or before.st_size == 0 or before.st_size != entry.size_bytes:
                         continue
                     evidence = extract_evidence(entry, inventory.content_read_bytes, cancelled=self.cancelled)
-                    if Preparation._identity(before) != Preparation._identity(file.stat()):
+                    if identity(before) != identity(file.stat()):
                         continue
                     samples.append((f'Readable sample: {evidence.text[:1600]}' if evidence.status == 'content'
                                     else f'Filename-only sample: {entry.filename}')
@@ -444,7 +443,7 @@ class Planner:
                 rows.append({'id': identifier, 'name': entry.filename, 'rel_path': entry.rel_path,
                     'kind': self._kind(entry, summary), 'basis': summary.basis, 'subject': summary.subject,
                     'evidence': self._source(entry, summary)})
-            fingerprints = {entry.rel_path: Preparation._identity(checked_path(
+            fingerprints = {entry.rel_path: identity(checked_path(
                 Path(inventory.root), entry.rel_path).stat()) for entry in self.prepared.files}
             folders, metadata = self._folder_rows(inventory, len(rows)+1)
             evidence_rows = [{'id': r['id'], 'origin': 'file', 'subject': r['subject'],
@@ -550,7 +549,7 @@ class Planner:
                     continue
                 try:
                     source = checked_path(Path(inventory.root), row['rel_path'])
-                    if Preparation._identity(source.stat()) != fingerprints[row['rel_path']]:
+                    if identity(source.stat()) != fingerprints[row['rel_path']]:
                         raise ValueError('File changed while its destination was being planned')
                 except (OSError, ValueError) as exc:
                     self._plan.warnings.append(PlanWarning('', f'Kept {row["rel_path"]}: {exc}'))

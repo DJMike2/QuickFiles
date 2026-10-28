@@ -1,7 +1,7 @@
 """Metadata collected without changing the scanned files."""
 from dataclasses import dataclass, field
 
-# For the inventory.py, do we want to hold it in memory? How much memory does it utlize assuming worst case scenario? Could be a bottleneck.
+
 @dataclass
 class FileEntry:
     rel_path: str
@@ -15,19 +15,6 @@ class FileEntry:
     is_empty: bool = False
     parent_folder: str = ""
     depth: int = 0
-
-    def to_compact_dict(self):
-        return {
-            "rel_path": self.rel_path,
-            "name": self.filename,
-            "ext": self.extension,
-            "size_kb": round(self.size_bytes / 1024, 1),
-            "bucket": self.file_type_bucket,
-            "parent": self.parent_folder,
-            "depth": self.depth,
-            "empty": self.is_empty,
-            "conservative": self.is_conservative,
-        }
 
 
 @dataclass
