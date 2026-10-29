@@ -138,10 +138,14 @@ Preferences, logs, downloaded models, search caches, and the undo journal are st
 
 </details>
 
-Tests, benchmark tools, performance reports, and packaged compatibility checks
-are maintained locally. Public CI builds Windows and Linux packages, verifies
-archive integrity, and smoke-checks the native scanners. Models, caches, and
+Tests, benchmark tools, and performance reports are maintained locally. Public CI
+builds and smoke-checks the Windows and Linux scanners. Models, caches, and
 generated binaries are excluded from version control.
+
+Release checks run the packaged app on Ubuntu 22.04, Ubuntu 24.04, and a Windows
+Server 2022 CI runner. They check GUI startup/shutdown, themes, file readers,
+the scanner, and CPU engine startup. Windows 10/11 are the desktop targets;
+the server runner is not a substitute for testing on those desktop systems.
 
 ## License
 
