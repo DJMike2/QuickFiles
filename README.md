@@ -6,7 +6,7 @@
 
 **Organize your files. Find what you need. Keep it local.**
 
-Windows & Linux · Local AI · Native C++ Scanner
+Windows 10/11 & Ubuntu 22.04+ · Local AI · Native C++ Scanner
 
 [Get Started](#get-started) · [How It Works](#how-it-works) · [Development](#development)
 
@@ -25,6 +25,15 @@ Windows & Linux · Local AI · Native C++ Scanner
 | **Undo** | Restore the most recent batch, preserving files that have since changed or would conflict. |
 
 ## Get started
+
+| Download target | Minimum system |
+| --- | --- |
+| Windows x64 | Windows 10 version 1809+ or Windows 11 |
+| Linux x64 | Ubuntu 22.04 LTS or newer; other distributions require glibc 2.35+ and are not yet validated |
+
+Windows 7/8.x and macOS are unsupported. Linux CUDA acceleration requires Ubuntu 24.04+
+or equivalent libraries; older supported systems use CPU inference. A compatible GPU
+and driver are also required. Linux builds run natively without Wine.
 
 **Requirements:** Python 3.10+ and a C++17 compiler available in your terminal.
 
@@ -62,6 +71,9 @@ python -m app.main
 </details>
 
 On first launch, choose **Setup AI** to download the local engine and **Qwen3.5-4B Q6_K** model (about 3.81 GB). CUDA acceleration is optional; a CPU engine is available if GPU startup fails. AI setup is required for organization.
+
+QuickFiles supplies its own light/dark themes. Desktops such as XFCE can run without
+the optional desktop Settings portal; its absence is recorded in the app log.
 
 Models load when you scan or search, stay ready for follow-up work, and unload after five idle minutes. Opening the app alone does not load them.
 
@@ -129,6 +141,11 @@ Preferences, logs, downloaded models, search caches, and the undo journal are st
 Tests, benchmark tools, and performance reports are maintained locally. Public CI
 builds and smoke-checks the Windows and Linux scanners. Models, caches, and
 generated binaries are excluded from version control.
+
+Release checks run the packaged app on Ubuntu 22.04, Ubuntu 24.04, and a Windows
+Server 2022 CI runner. They check GUI startup/shutdown, themes, file readers,
+the scanner, and CPU engine startup. Windows 10/11 are the desktop targets;
+the server runner is not a substitute for testing on those desktop systems.
 
 ## License
 

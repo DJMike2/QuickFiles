@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
 import os
 import platform
 import re
@@ -10,7 +11,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from app.platforms import external_environment, require_supported_platform
+from app.platforms import MIN_CUDA_GLIBC, external_environment, glibc_version, require_supported_platform
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,8 +63,6 @@ def probe():
     require_supported_platform()
     hardware = HardwareProfile(platform.processor() or platform.machine(), os.cpu_count() or 1, _ram_gb())
     if sys.platform == "win32":
-        if sys.getwindowsversion().major < 10:
-            hardware.os_warning = "Automatic AI installation requires Windows 10 or newer."
         raw = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
         if raw:
             try:
@@ -102,4 +103,8 @@ def probe():
                 hardware.backend = "cuda"
             except ValueError:
                 pass
+        if hardware.backend == "cuda" and glibc_version() < MIN_CUDA_GLIBC:
+            # The pinned CUDA engine needs newer system libraries than the CPU engine.
+            hardware.backend = "cpu"
+            log.info("Using CPU AI: the Linux CUDA engine requires glibc 2.38 or newer.")
     return hardware
