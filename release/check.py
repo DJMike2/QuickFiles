@@ -70,7 +70,8 @@ def _run_checks(engine):
         if engine:
             binary = Path(engine).resolve()
             subprocess.run([str(binary), "--version"], env=engine_environment(binary),
-                           capture_output=True, check=True, timeout=30)
+                           capture_output=True, check=True, timeout=30,
+                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
 
         config = AppConfig(root / "state")
         config.update({"allowed_root": str(files), "search_root": str(files), "watch_new_files": False})

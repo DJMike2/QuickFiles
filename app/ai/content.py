@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 import zipfile
 
@@ -24,7 +25,8 @@ def _pdf_text(path, pages=1, *, cancelled=None):
     if shutil.which("pdftotext"):
         command = ["pdftotext", "-f", "1", "-l", str(pages), "-nopgbrk", str(path), "-"]
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   env=external_environment())
+                                   env=external_environment(),
+                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         try:
             deadline = time.monotonic() + 4 * pages
             while True:
