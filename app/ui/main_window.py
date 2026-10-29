@@ -638,10 +638,14 @@ class MainWindow(QMainWindow):
         self._buttons()
 
     def _settings(self):
+        keys = ("allowed_root", "shortcuts_movable", "executables_movable", "exclude_patterns")
+        before = [self.config.get(key) for key in keys]
         if SettingsDialog(self.ctx, self).exec():
             self.path.setText(self.config.get("allowed_root"))
             self._theme()
-            self._invalidate()
+            # Only settings that change the scan or its plan discard the current preview.
+            if before != [self.config.get(key) for key in keys]:
+                self._invalidate()
             self.ctx.runtime.shutdown()
             self.ctx.search.exclude_patterns = self.config.get("exclude_patterns")
             self._arm_watch()
