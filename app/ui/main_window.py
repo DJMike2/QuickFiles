@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self.search_panel.folder.setText(self.config.get("search_root"))
         self.search_panel.searchRequested.connect(self._search)
         self.search_panel.cancelRequested.connect(self._cancel_search)
+        self.search_panel.query.textEdited.connect(self._prepare_search)
         self.pages.addWidget(self.search_panel)
         toolbar.insertWidget(1, self.search_panel.scope_bar, 1)
         self.progress = QProgressBar()
@@ -606,6 +607,12 @@ class MainWindow(QMainWindow):
         self.search_worker.finished.connect(self._search_finished)
         self._buttons()
         self.search_worker.start()
+
+    def _prepare_search(self, text):
+        # Typing takes seconds, about as long as loading the models after they were released.
+        prepare = getattr(self.ctx, "prepare_search", None)
+        if prepare and text.strip() and not (self.worker or self.search_worker):
+            prepare()
 
     def _cancel_search(self):
         if self.search_worker:
