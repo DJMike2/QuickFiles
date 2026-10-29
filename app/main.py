@@ -13,7 +13,7 @@ def main():
         return 1
 
     from app.config import AppConfig
-    from app.logging_setup import log_unhandled_exception, setup_logging
+    from app.logging_setup import log_unhandled_exception, qt_logging, setup_logging
 
     config = AppConfig()
     setup_logging(config.app_data_dir / "logs")
@@ -27,15 +27,16 @@ def main():
         from app.constants import APP_NAME
         from app.ui.main_window import MainWindow
 
-        application = QApplication(sys.argv)
-        application.setApplicationName(APP_NAME)
-        application.setOrganizationName("DesktopOrganizerAI")
-        context = AppContext(config)
-        application.aboutToQuit.connect(context.shutdown)
-        window = MainWindow(context)
-        window.show()
-        QTimer.singleShot(200, window.show_first_run_if_needed)
-        return application.exec()
+        with qt_logging():
+            application = QApplication(sys.argv)
+            application.setApplicationName(APP_NAME)
+            application.setOrganizationName("DesktopOrganizerAI")
+            context = AppContext(config)
+            application.aboutToQuit.connect(context.shutdown)
+            window = MainWindow(context)
+            window.show()
+            QTimer.singleShot(200, window.show_first_run_if_needed)
+            return application.exec()
     except Exception:
         logging.getLogger(__name__).exception("Application failed to start or run")
         return 1
