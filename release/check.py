@@ -3,7 +3,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +14,7 @@ def _run_checks(engine):
     import numpy as np
     from PIL import Image
     from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
     from PySide6.QtCore import qVersion
     from PySide6.QtWidgets import QApplication
 
@@ -39,7 +39,15 @@ def _run_checks(engine):
         files.mkdir()
         (files / "notes.txt").write_text("QuickFiles compatibility check", encoding="utf-8")
         writer = PdfWriter()
-        writer.add_blank_page(width=200, height=200)
+        page = writer.add_blank_page(width=612, height=792)
+        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                                 NameObject("/Subtype"): NameObject("/Type1"),
+                                 NameObject("/BaseFont"): NameObject("/Helvetica")})
+        page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"):
+            DictionaryObject({NameObject("/F1"): writer._add_object(font)})})
+        stream = DecodedStreamObject()
+        stream.set_data(b"BT /F1 12 Tf 72 720 Td (QuickFiles compatibility check) Tj ET")
+        page[NameObject("/Contents")] = writer._add_object(stream)
         writer.write(files / "document.pdf")
         assert len(PdfReader(files / "document.pdf").pages) == 1
         Image.new("RGB", (32, 32), "white").save(files / "picture.png")
@@ -52,14 +60,13 @@ def _run_checks(engine):
         assert {entry.rel_path for entry in inventory.entries} == {"notes.txt", "document.pdf", "picture.png"}
         notes = next(entry for entry in inventory.entries if entry.filename == "notes.txt")
         assert read_content(notes) == "QuickFiles compatibility check"
+        document = next(entry for entry in inventory.entries if entry.filename == "document.pdf")
+        assert "QuickFiles compatibility check" in read_content(document)
         assert (project / "keep.txt").read_text() == "Protected project file"
 
         environment = external_environment()
         if sys.platform == "linux" and getattr(sys, "frozen", False):
             assert sys._MEIPASS not in environment.get("LD_LIBRARY_PATH", "").split(os.pathsep)
-        reader = shutil.which("pdftotext")
-        if reader:
-            subprocess.run([reader, "-v"], env=environment, capture_output=True, check=True, timeout=10)
         if engine:
             binary = Path(engine).resolve()
             subprocess.run([str(binary), "--version"], env=engine_environment(binary),
@@ -91,7 +98,7 @@ def _run_checks(engine):
                     logging.getLogger().removeHandler(handler)
     return {"passed": True, "platform": sys.platform, "qt": qVersion(),
             "glibc": glibc_version() if sys.platform == "linux" else None,
-            "checks": ["scanner", "project protection", "PDF/image/video libraries", "themes", "GUI open/close",
+            "checks": ["scanner", "project protection", "PDF text/image/video libraries", "themes", "GUI open/close",
                        "external libraries"] + (["CPU engine startup"] if engine else [])}
 
 
