@@ -31,7 +31,9 @@ def _run_checks(engine):
 
     require_supported_platform()
     assert av.library_versions and np.isfinite(np.asarray([1.0])).all()
-    with tempfile.TemporaryDirectory(prefix="quickfiles-check-") as directory:
+    # Windows' default temporary directory is inside protected AppData.
+    temporary_parent = Path.home() if sys.platform == "win32" else None
+    with tempfile.TemporaryDirectory(prefix="quickfiles-check-", dir=temporary_parent) as directory:
         root = Path(directory)
         files = root / "files"
         files.mkdir()
