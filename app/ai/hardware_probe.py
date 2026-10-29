@@ -10,7 +10,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from app.platforms import require_supported_platform
+from app.platforms import external_environment, require_supported_platform
 
 
 @dataclass
@@ -28,6 +28,7 @@ def _run(arguments):
     try:
         return subprocess.run(
             arguments, capture_output=True, text=True, timeout=8,
+            env=external_environment(),
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):

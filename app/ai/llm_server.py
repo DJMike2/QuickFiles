@@ -15,6 +15,8 @@ import time
 import urllib.error
 import urllib.request
 
+from app.platforms import external_environment
+
 log = logging.getLogger(__name__)
 
 
@@ -70,10 +72,11 @@ class LLMServer:
                 with socket.socket() as sock:
                     sock.bind(("127.0.0.1", 0))
                     self.port = sock.getsockname()[1]
-                environment = dict(os.environ)
+                environment = external_environment()
                 environment["PATH"] = str(binary.parent) + os.pathsep + environment.get("PATH", "")
                 if sys.platform.startswith("linux"):
-                    environment["LD_LIBRARY_PATH"] = str(binary.parent) + os.pathsep + environment.get("LD_LIBRARY_PATH", "")
+                    paths = [str(binary.parent), environment.get("LD_LIBRARY_PATH", "")]
+                    environment["LD_LIBRARY_PATH"] = os.pathsep.join(path for path in paths if path)
                 self._output = tempfile.TemporaryFile()
                 self._process = subprocess.Popen(
                     self._command(binary, layers),
