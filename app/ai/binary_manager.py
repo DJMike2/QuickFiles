@@ -41,6 +41,8 @@ class BinaryManager:
 
     @property
     def gpu_binary_path(self):
+        if self.hardware.backend not in {"cuda", "vulkan"}:
+            return None
         path = self._binary("gpu")
         return path if path.is_file() and os.access(path, os.X_OK) else None
 

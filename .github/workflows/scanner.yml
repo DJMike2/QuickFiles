@@ -26,7 +26,7 @@ jobs:
             binary: fastscan
             artifact: fastscan-linux-x64
             archive: fastscan-linux-x64.tar.gz
-          - os: windows-latest
+          - os: windows-2022
             binary: fastscan.exe
             artifact: fastscan-windows-x64
             archive: fastscan-windows-x64.zip

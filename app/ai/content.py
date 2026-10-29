@@ -5,10 +5,12 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 import zipfile
 
 from app.constants import READABLE_EXTENSIONS
+from app.platforms import external_environment
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +24,9 @@ def _pdf_text(path, pages=1, *, cancelled=None):
     _check_cancelled(cancelled)
     if shutil.which("pdftotext"):
         command = ["pdftotext", "-f", "1", "-l", str(pages), "-nopgbrk", str(path), "-"]
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   env=external_environment(),
+                                   creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         try:
             deadline = time.monotonic() + 4 * pages
             while True:
@@ -43,8 +47,9 @@ def _pdf_text(path, pages=1, *, cancelled=None):
         if result.returncode:
             log.warning('PDF reader failed for %s (exit %s): %s', path, result.returncode,
                         result.stderr[:2048].decode('utf-8', 'replace').strip())
-        return result.stdout[:12000 * pages].decode("utf-8", "replace")
-    # Portable fallback for computers without Poppler. Large PDFs stay filename-only.
+        else:
+            return result.stdout[:12000 * pages].decode("utf-8", "replace")
+    # Use the bundled reader if Poppler is missing or fails. Large PDFs stay filename-only.
     if path.stat().st_size <= 50 * 1024 * 1024:
         try:
             from pypdf import PdfReader
