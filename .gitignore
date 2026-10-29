@@ -20,6 +20,7 @@ app/core/native/bin/
 # Keep local verification tools and reports out of the public source tree.
 /tests/
 /metrics/
+/release/check.py
 /benchmarks.md
 /comments.md
 /docs/accuracy-benchmark.md
