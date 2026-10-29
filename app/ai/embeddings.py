@@ -1,8 +1,12 @@
-"""Small CPU embeddings through the installed llama.cpp engine."""
+"""Small embeddings through the installed llama.cpp engine, on the GPU when it has room."""
 import numpy as np
 
 from app.ai.llm_server import ContextTooLargeError, LLMServer, LLMServerError
 from app.ai.model_runtime import ModelRuntime
+
+# On the GPU, files are indexed several times faster, but the encoder needs ~0.4 GB beside the
+# search model; smaller or unknown GPUs keep it on the CPU.
+GPU_VRAM_GB = 7.5
 
 
 class EmbeddingRuntime(ModelRuntime):
@@ -12,8 +16,9 @@ class EmbeddingRuntime(ModelRuntime):
         self.model_manager = model_manager
 
     def _new_server(self):
+        layers = 99 if self.binary_manager.hardware.vram_gb >= GPU_VRAM_GB else 0
         return LLMServer(self.binary_manager, self.model_manager.embedding_model_path,
-                         {'n_gpu_layers': 0, 'context_tokens': self.info['context_tokens'],
+                         {'n_gpu_layers': layers, 'context_tokens': self.info['context_tokens'],
                           'threads': 2, 'pooling': self.info['pooling']}, embedding=True)
 
     def prestart(self, cancelled=None):

@@ -42,6 +42,12 @@ class AppContext:
                 self.vision.shutdown()
                 raise
 
+    def prepare_search(self):
+        """Load the search models while a request is typed; the idle timer still releases them."""
+        with self.ai_activity.operation():
+            self.embeddings.prestart()
+            self.runtime.prestart()
+
     def cancel_ai(self):
         self.runtime.interrupt()
         self.embeddings.interrupt()

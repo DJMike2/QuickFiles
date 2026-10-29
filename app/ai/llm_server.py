@@ -69,7 +69,7 @@ class LLMServer:
         if not manager.is_available or not self.model_path.is_file():
             raise LLMServerError("AI engine or model is missing")
         attempts = []
-        if manager.gpu_binary_path and not self.embedding:
+        if manager.gpu_binary_path and self.settings["n_gpu_layers"]:
             attempts.append((manager.gpu_binary_path, self.settings["n_gpu_layers"], manager.hardware.backend))
         attempts.append((manager.cpu_binary_path, 0, "cpu"))
         errors = []

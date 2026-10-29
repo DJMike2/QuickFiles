@@ -1,4 +1,5 @@
 """Read-only file search: plan the request, update a local file map, retrieve, report."""
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date
 import fnmatch
@@ -35,6 +36,10 @@ RELATIVE_MARGIN = .30
 REVIEW_EXCERPT = 600
 # A PDF with less extractable text than this has no real text layer: it is a scan.
 SCAN_TEXT_CHARS = 40
+# New files are read this many at a time (PDF text comes from a slow subprocess), in chunks of
+# READ_CHUNK walked files.
+READERS = 4
+READ_CHUNK = 64
 # Keywords at least this long also match longer words ("promo" -> promotional, "japan" -> japanese).
 PREFIX_LETTERS = 5
 # Words that take a number without naming anything ("last 3 days", "over 2 GB", "top 5").
@@ -239,6 +244,47 @@ class FileSearch:
         def excluded(name):
             return name.startswith('.') or any(fnmatch.fnmatch(name, p) for p in self.exclude_patterns)
 
+        def read(entry):
+            try:
+                return read_content(entry, 64 * 1024, max_chars=self.excerpt_chars, detailed=True,
+                                    cancelled=cancelled)
+            except (OSError, ValueError, RuntimeError) as exc:
+                return exc  # Raised again in walk order below.
+
+        walked = []
+        reading = ThreadPoolExecutor(READERS, thread_name_prefix='search-read')
+
+        def index_walked():
+            """Index the walked files in walk order, so rows and embedding batches keep that order."""
+            nonlocal skipped
+            texts = reading.map(read, [entry for _, entry, _ in walked if entry])
+            for relative, entry, found in walked:  # found: the cached row, or the new file's stat
+                check()
+                if not entry:
+                    current.append(found)
+                    continue
+                try:
+                    text = next(texts)
+                    if isinstance(text, Exception):
+                        raise text
+                    row = {'path': relative, 'mtime_ns': found.st_mtime_ns, 'size': found.st_size, 'text': text}
+                    kind = vision and visual_kind(entry.extension, text)
+                    if kind:
+                        if not visual:
+                            preload = getattr(vision, 'prestart', None)
+                            if preload:
+                                preload(cancelled)
+                        visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
+                        continue
+                    pending.append({**row, 'document': self._document(relative, text)})
+                    if len(pending) == 8:
+                        flush()
+                except (OSError, ValueError, RuntimeError) as exc:
+                    if isinstance(exc, (LLMServerError, InterruptedError)):
+                        raise
+                    skipped += 1
+            walked.clear()
+
         try:
             for directory, directories, files in os.walk(root, followlinks=False):
                 check()
@@ -269,27 +315,17 @@ class FileSearch:
                         if (old and old['mtime_ns'] == info.st_mtime_ns and old['size'] == info.st_size
                                 and len(old['vector']) == self.embeddings.dimensions * 4
                                 and self._reusable(old, extension, vision, described)):
-                            current.append(old)
+                            walked.append((relative, None, old))
                             continue
                         entry = FileEntry(relative, name, extension, str(path), size_bytes=info.st_size)
-                        text = read_content(entry, 64 * 1024, max_chars=self.excerpt_chars, detailed=True,
-                                            cancelled=cancelled)
-                        row = {'path': relative, 'mtime_ns': info.st_mtime_ns, 'size': info.st_size, 'text': text}
-                        kind = vision and visual_kind(extension, text)
-                        if kind:
-                            if not visual:
-                                preload = getattr(vision, 'prestart', None)
-                                if preload:
-                                    preload(cancelled)
-                            visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
-                            continue
-                        pending.append({**row, 'document': self._document(relative, text)})
-                        if len(pending) == 8:
-                            flush()
+                        walked.append((relative, entry, info))
+                        if len(walked) >= READ_CHUNK:
+                            index_walked()
                     except (OSError, ValueError, RuntimeError) as exc:
                         if isinstance(exc, (LLMServerError, InterruptedError)):
                             raise
                         skipped += 1
+            index_walked()
             if not visual:
                 preload = getattr(self.runtime, 'prestart', None)
                 if preload:
@@ -313,6 +349,7 @@ class FileSearch:
                     row.pop('kind', None)
                     pending.append({**row, 'document': self._document(row['path'], row['text'])})
         finally:
+            reading.shutdown(cancel_futures=True)
             if vision:
                 vision.shutdown()  # Free the GPU for the search model.
         preload = getattr(self.runtime, 'prestart', None)
