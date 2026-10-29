@@ -1,10 +1,19 @@
-
 name: Release
 
 on:
+  workflow_dispatch:
   push:
+    branches:
+      - main
+      - 'fix/release-*'
     tags:
       - 'v*'
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'release/**'
+      - 'requirements.txt'
+      - '.github/workflows/release.yml'
 
 permissions:
   contents: read
@@ -18,7 +27,7 @@ jobs:
           - os: ubuntu-22.04
             scanner: fastscan
             archive: QuickFiles-linux-x64.tar.gz
-          - os: windows-latest
+          - os: windows-2022
             scanner: fastscan.exe
             archive: QuickFiles-windows-x64.zip
 
@@ -40,11 +49,17 @@ jobs:
           "C:\msys64\mingw64\bin" |
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Install Linux desktop libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libopengl0 libxkbcommon0
+
       - name: Build native scanner
         run: python -B tools/build_scanner.py
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt pyinstaller
+        run: python -m pip install -r requirements.txt pyinstaller==6.22.3
 
       - name: Build QuickFiles
         run: >
@@ -62,6 +77,9 @@ jobs:
         run: |
           test -f "dist/QuickFiles/_internal/app/core/native/bin/${{ matrix.scanner }}"
 
+      - name: Include project license
+        run: python -c "import shutil; shutil.copy2('LICENSE', 'dist/QuickFiles/LICENSE')"
+
       - name: Sign Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -70,6 +88,14 @@ jobs:
           CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
         run: |
           $certPath = Join-Path $env:RUNNER_TEMP "quickfiles.pfx"
+
+          if (-not $env:CERT_BASE64 -or -not $env:CERT_PASSWORD) {
+            if ($env:GITHUB_REF_TYPE -eq "tag") {
+              throw "Release signing credentials are required for tagged builds"
+            }
+            Write-Host "Signing credentials unavailable; this test build will be unsigned"
+            exit 0
+          }
 
           try {
             [IO.File]::WriteAllBytes(
@@ -118,15 +144,131 @@ jobs:
         run: |
           Compress-Archive -Path dist/QuickFiles -DestinationPath "${{ matrix.archive }}"
 
+      - name: Verify archive and write checksum
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+          import subprocess
+          import tarfile
+          import zipfile
+
+          archive = Path("${{ matrix.archive }}")
+          if archive.name.endswith(".tar.gz"):
+              subprocess.run(["gzip", "-t", str(archive)], check=True)
+              with tarfile.open(archive) as package:
+                  executable = package.getmember("QuickFiles/QuickFiles")
+                  assert executable.mode & 0o111, "Launcher is not executable"
+          else:
+              with zipfile.ZipFile(archive) as package:
+                  assert package.testzip() is None, "Archive contains a corrupt file"
+                  package.getinfo("QuickFiles/QuickFiles.exe")
+          with archive.open("rb") as stream:
+              checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+          archive.with_name(archive.name + ".sha256").write_text(
+              f"{checksum}  {archive.name}\n", encoding="utf-8"
+          )
+
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
           if-no-files-found: error
 
-  release:
+  compatibility:
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            archive: QuickFiles-linux-x64.tar.gz
+          - os: ubuntu-24.04
+            archive: QuickFiles-linux-x64.tar.gz
+          - os: windows-2022
+            archive: QuickFiles-windows-x64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux desktop libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libopengl0 libxkbcommon0 poppler-utils
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+
+      - name: Verify checksum and extract
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          archive = Path("${{ matrix.archive }}")
+          expected = archive.with_name(archive.name + ".sha256").read_text().split()[0]
+          with archive.open("rb") as stream:
+              assert hashlib.file_digest(stream, "sha256").hexdigest() == expected
+          if archive.name.endswith(".tar.gz"):
+              with tarfile.open(archive) as package:
+                  package.extractall(filter="data")
+          else:
+              with zipfile.ZipFile(archive) as package:
+                  package.extractall()
+
+      - name: Install pinned CPU engine for compatibility check
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import sys
+          from types import SimpleNamespace
+
+          sys.path.insert(0, str(Path.cwd()))
+          from app.ai.binary_manager import BinaryManager
+
+          manager = BinaryManager(Path("build/engine-check"), SimpleNamespace(backend="cpu", os_warning=""))
+          binary = manager.download()
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"QUICKFILES_CPU_ENGINE={binary.resolve()}\n")
+
+      - name: Check packaged application and external engine
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          executable = Path("QuickFiles") / ("QuickFiles.exe" if os.name == "nt" else "QuickFiles")
+          environment = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+          process = subprocess.run([str(executable.resolve()), "--check", "packaged-check.json",
+                                    os.environ["QUICKFILES_CPU_ENGINE"]],
+                                   env=environment, timeout=120)
+          report = json.loads(Path("packaged-check.json").read_text(encoding="utf-8"))
+          print(json.dumps(report, indent=2))
+          assert process.returncode == 0 and report["passed"], report
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compatibility-${{ matrix.os }}
+          path: packaged-check.json
+          if-no-files-found: warn
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [build, compatibility]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -136,6 +278,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: assets
+          pattern: QuickFiles-*
           merge-multiple: true
 
       - name: Create draft release
