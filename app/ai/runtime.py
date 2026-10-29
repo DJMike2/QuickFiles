@@ -10,7 +10,8 @@ from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
 from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, FOLDER_PLAN_PROMPT,
                             LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
-                            CATALOG_PROMPT, GROUPS_PROMPT, MATCH_PROMPT, REVIEW_PROMPT)
+                            CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
+                            MATCH_PROMPT, REVIEW_PROMPT)
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
 
 SEARCH_SORTS = ['relevance', 'newest', 'oldest', 'largest', 'smallest']
@@ -207,17 +208,27 @@ class AIRuntime(ModelRuntime):
             'topic': {'type': 'string', 'maxLength': 96},
             'quote': {'type': 'string', 'maxLength': 140}}
         from app.ai.evidence import literal_passages
-        local_rows = [{**row, 'id': i} for i, row in enumerate(rows, 1)]
+        passages = [['', *literal_passages(row['evidence'])] for row in rows]
+        local_rows = [{**row, 'id': i, 'support': numbered_quotes(options)}
+                      for i, (row, options) in enumerate(zip(rows, passages), 1)]
+        user = json.dumps({'items': local_rows}, ensure_ascii=False)
+        max_tokens = 320 * len(rows) + 64
+        # UTF-8 bytes conservatively bound tokens; reserve room for output and chat framing.
+        indexed = (len(user.encode('utf-8')) + len(CATALOG_PROMPT.encode('utf-8')) + max_tokens + 256
+                   <= self.model_manager.runtime_settings.get('context_tokens', 8192))
+        if not indexed:
+            local_rows = [{**row, 'id': i} for i, row in enumerate(rows, 1)]
+            user = json.dumps({'items': local_rows}, ensure_ascii=False)
         keys = [str(i) for i in range(1, len(rows)+1)]
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {'profiles': {
             'type': 'object', 'additionalProperties': False,
             'properties': {key: {'type':'object', 'additionalProperties':False,
-                'properties': {**properties, 'quote': {'enum':['', *literal_passages(row['evidence'])]}},
-                'required':list(properties)} for key,row in zip(keys, rows)}, 'required': keys}},
+                'properties': {**properties, 'quote': {'enum':list(range(len(options))) if indexed else options}},
+                'required':list(properties)} for key,options in zip(keys, passages)}, 'required': keys}},
             'required': ['profiles']}
         try:
-            raw = self._generate(CATALOG_PROMPT, json.dumps({'items': local_rows}, ensure_ascii=False),
-                status_cb, cancelled, schema=schema, max_tokens=320 * len(rows) + 64, temperature=0)
+            raw = self._generate(CATALOG_PROMPT if indexed else CATALOG_LITERAL_PROMPT, user,
+                status_cb, cancelled, schema=schema, max_tokens=max_tokens, temperature=0)
         except (ContextTooLargeError, IncompleteResponseError):
             if len(rows) <= 1:
                 raise LLMServerError('The local model could not describe this item completely')
@@ -229,7 +240,8 @@ class AIRuntime(ModelRuntime):
             if (not isinstance(values, dict) or set(values) != set(keys)
                     or any(not isinstance(v, dict) for v in values.values())):
                 raise ValueError('Missing or invalid profile keys')
-            return [{**values[key], 'id': row['id']} for key, row in zip(keys, rows)]
+            return [{**values[key], 'quote': restore_quote(values[key]['quote'], options), 'id': row['id']}
+                    for key, row, options in zip(keys, rows, passages)]
         except (ValueError, TypeError, KeyError) as exc:
             raise LLMServerError('The local model returned an invalid evidence catalog') from exc
 
