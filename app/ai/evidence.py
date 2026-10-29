@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 import logging
 from pathlib import Path
 import re
+import struct
 import subprocess
 import unicodedata
 import zipfile
@@ -90,6 +91,30 @@ def _xml_text(archive, member, budget):
     return html.unescape(re.sub(r"<[^>]+>", " ", xml))
 
 
+def _archive_names(path, count, *, cancelled=None):
+    # zipfile loads the entire directory, even when only a few names are needed.
+    # Bound that metadata before parsing; never unpack archive contents.
+    _check_cancelled(cancelled)
+    with Path(path).open("rb") as stream:
+        stream.seek(0, 2)
+        size = stream.tell()
+        # Include the 22-byte end record, its maximum comment and a ZIP64 locator.
+        stream.seek(max(0, size - 65577))
+        tail = stream.read(65577)
+        end = tail.rfind(b"PK\x05\x06")
+        if end < 0 or end + 22 > len(tail):
+            raise zipfile.BadZipFile("Archive directory is missing or truncated")
+        entries, directory_size = struct.unpack_from("<HL", tail, end + 10)
+        # ZIP64 records can override the ordinary record's declared limits.
+        zip64 = end >= 20 and tail[end-20:end-16] == b"PK\x06\x07"
+        if zip64 or entries > 8192 or directory_size > 1024 * 1024:
+            return None
+        _check_cancelled(cancelled)
+        with zipfile.ZipFile(stream) as archive:
+            _check_cancelled(cancelled)
+            return ", ".join(item.filename for item in archive.infolist()[:count])
+
+
 def extract_evidence(entry, read_limit=32768, *, cancelled=None):
     """Never download placeholders, execute files, or interpret instructions in them.
 
@@ -138,9 +163,10 @@ def extract_evidence(entry, read_limit=32768, *, cancelled=None):
             # A ZIP central directory must be parsed by zipfile before it can be sampled.
             if entry.size_bytes > 500_000_000:
                 return ContentEvidence("unsupported", limitation="Large archive; filename only")
-            with zipfile.ZipFile(path) as archive:
-                text = "Archive member names: " + ", ".join(
-                    item.filename for item in archive.infolist()[:40])
+            names = _archive_names(path, 40, cancelled=cancelled)
+            if names is None:
+                return ContentEvidence("unsupported", limitation="Large archive directory; filename only")
+            text = "Archive member names: " + names
             status = "archive_listing"
             limitation = "Member names only; archive contents were not opened"
         elif extension in READABLE_EXTENSIONS | {".m", ".tex", ".tsv", ".ipynb"}:
