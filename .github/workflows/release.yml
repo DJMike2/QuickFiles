@@ -53,7 +53,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libopengl0 libxkbcommon0
+          sudo apt-get install -y libegl1 libgl1 libopengl0 libxkbcommon0 \
+            pkg-config libdbus-1-dev libglib2.0-dev libxml2-dev libxtst-dev libxi-dev libx11-dev gettext dbus
 
       - name: Build native scanner
         run: python -B tools/build_scanner.py
@@ -71,6 +72,28 @@ jobs:
           --add-data "models/settings.json:models"
           --add-binary "app/core/native/bin/${{ matrix.scanner }}:app/core/native/bin"
           release/launcher.py
+
+      - name: Update bundled Linux accessibility libraries
+        if: runner.os == 'Linux'
+        run: |
+          # Build on Ubuntu 22.04 to keep its runtime baseline with the newer ATK bridge.
+          python -m pip install meson==1.5.2 ninja==1.11.1.1
+          a11y_source=build/a11y/at-spi2-core-2.52.0
+          mkdir -p build/a11y
+          curl --fail --location --retry 3 \
+            https://download.gnome.org/sources/at-spi2-core/2.52/at-spi2-core-2.52.0.tar.xz \
+            -o "$a11y_source.tar.xz"
+          echo "0ac3fc8320c8d01fa147c272ba7fa03806389c6b03d3c406d0823e30e35ff5ab  $a11y_source.tar.xz" | sha256sum -c -
+          tar -xJf "$a11y_source.tar.xz" -C build/a11y
+          meson setup build/a11y/output "$a11y_source" --prefix=/usr --libdir=lib --buildtype=release \
+            -Dintrospection=disabled -Dgtk2_atk_adaptor=false -Duse_systemd=false -Dx11=enabled
+          meson compile -C build/a11y/output --jobs 2
+          meson install -C build/a11y/output --destdir "$PWD/build/a11y/stage"
+          for library in libatk-1.0.so.0 libatk-bridge-2.0.so.0 libatspi.so.0; do
+            cp -L "build/a11y/stage/usr/lib/$library" "dist/QuickFiles/_internal/$library"
+          done
+          mkdir -p dist/QuickFiles/third-party/at-spi2-core
+          cp "$a11y_source.tar.xz" "$a11y_source/COPYING" dist/QuickFiles/third-party/at-spi2-core/
 
       - name: Verify packaged scanner
         shell: bash
