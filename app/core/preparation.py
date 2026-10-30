@@ -32,11 +32,6 @@ class FileSummary:
     quotes: list[str]
     limitation: str
 
-    def hint(self):
-        return json.dumps({"basis": self.basis, "subject": self.subject,
-                           "identifiers": self.identifiers, "summary": self.summary,
-                           "limitation": self.limitation}, ensure_ascii=False, separators=(",", ":"))
-
 
 @dataclass
 class PreparedInventory:

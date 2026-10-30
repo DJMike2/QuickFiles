@@ -13,10 +13,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
-from app.constants import (
-    APP_NAME, CONSERVATIVE_EXTENSIONS, EXECUTABLE_EXTENSIONS, EXT_CATEGORY_MAP,
-    SHORTCUT_EXTENSIONS,
-)
+from app.constants import APP_NAME, CONSERVATIVE_EXTENSIONS, EXECUTABLE_EXTENSIONS, SHORTCUT_EXTENSIONS
 from app.ai.content import read_content
 from app.ai.schema import PlanAction
 from app.core.arrival import ScanIndex, is_ignored
@@ -83,8 +80,7 @@ class MainWindow(QMainWindow):
         self.preview.planChanged.connect(self._plan_changed)
         self.preview.editRejected.connect(self._edit_rejected)
         self.pages.addWidget(self.preview)
-        # Hide the development JSON loader in the main application.
-        self.search_panel = SearchPanel(self, show_json_loader=False)
+        self.search_panel = SearchPanel(self)
         self.search_panel.folder.setText(self.config.get("search_root"))
         self.search_panel.searchRequested.connect(self._search)
         self.search_panel.cancelRequested.connect(self._cancel_search)
@@ -344,7 +340,6 @@ class MainWindow(QMainWindow):
                     entry = FileEntry(
                         path.name, path.name, extension, str(path), size_bytes=stat.st_size,
                         modified_ts=stat.st_mtime,
-                        file_type_bucket=EXT_CATEGORY_MAP.get(extension, "Misc"),
                         is_conservative=extension in CONSERVATIVE_EXTENSIONS, depth=0,
                     )
                     files.append({
@@ -363,7 +358,7 @@ class MainWindow(QMainWindow):
                         continue
                     action = PlanAction(
                         str(row["id"]), "move", row["name"], f"{folder}/{row['name']}",
-                        category=folder, confidence=1, reason="Local AI matched the file to this folder",
+                        category=folder, reason="Local AI matched the file to this folder",
                         source_identity=row['source_identity'],
                     )
                     if executor.apply([action]).succeeded:

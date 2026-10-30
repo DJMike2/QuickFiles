@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -83,8 +82,6 @@ class Validator:
             try:
                 if action.type not in {"move", "rename", "mkdir"}:
                     raise ValueError(f"Unsupported action: {action.type}")
-                if not math.isfinite(action.confidence) or not 0 <= action.confidence <= 1:
-                    raise ValueError("Invalid confidence")
                 action.dst_rel = "/".join(relative_parts(action.dst_rel))
                 destination = checked_path(self.root, action.dst_rel)
                 enforce_project_boundary(self.root, destination)

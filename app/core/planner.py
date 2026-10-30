@@ -576,7 +576,7 @@ class Planner:
                     self.decisions[row['rel_path']]['folder'] = ''
                     continue
                 self._plan.actions.append(PlanAction(str(len(self._plan.actions)+1), 'move', row['rel_path'],
-                    path + '/' + row['name'], category=path, confidence=0.0,
+                    path + '/' + row['name'], category=path,
                     reason=decision['reason'] + '\nEvidence: ' + decision['evidence'],
                     source_identity=fingerprints[row['rel_path']]))
             self._check_cancelled()
