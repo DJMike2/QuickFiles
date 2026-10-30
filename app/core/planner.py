@@ -16,6 +16,7 @@ from app.core.identities import COURSE, course_codes, normalized, same_course, s
 from app.core.naming import relative_parts
 from app.core.organization import Profile, ProfileCache, profile_key, scope_compatible, scope_matches
 from app.core.preparation import Preparation
+from app.logging_setup import log_stage
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class Planner:
             except (ValueError, TypeError, KeyError, AttributeError):
                 pending.append((row, key))
         described = {}
+        log.info("Subject profiles: ready=%d model_candidates=%d", len(found), len(pending))
         for offset in range(len(pending)):
             self._check_cancelled()
             # One item per semantic judgment: unrelated neighbours and filename
@@ -397,6 +399,7 @@ class Planner:
                     for p, d in self.destinations.items()
                     if d['existing'] and any(self._compatible(row, p, d) for row in members)]
         self.progress_cb('Finding shared subjects…')
+        log.info("Shared-subject request: files=%d existing_folders=%d", len(offered), len(existing))
         proposals = self.runtime.propose_groups(offered, existing, self.progress_cb, self.cancelled)
         for proposal in proposals:
             try:
@@ -487,9 +490,12 @@ class Planner:
         self._existing_directories = set(inventory.directories)
         self.catalog, self.destinations, self.decisions = {}, {}, {}
         try:
-            self.prepared = Preparation(self.runtime, self.progress_cb, self.cancelled,
-                shortcuts_movable=self.shortcuts_movable, executables_movable=self.executables_movable,
-                cache_path=self.summary_cache_path).prepare(inventory)
+            with log_stage(log, "Content preparation"):
+                self.prepared = Preparation(self.runtime, self.progress_cb, self.cancelled,
+                    shortcuts_movable=self.shortcuts_movable, executables_movable=self.executables_movable,
+                    cache_path=self.summary_cache_path).prepare(inventory)
+            log.info("Prepared files: eligible=%d held=%d summary_cache_hits=%d",
+                     len(self.prepared.files), len(self.prepared.held), self.prepared.cache_hits)
             if not self.prepared.files:
                 self._plan.excluded_count = inventory.total_files
                 return self._plan
@@ -504,12 +510,15 @@ class Planner:
                     'evidence': self._source(entry, summary)})
             fingerprints = {entry.rel_path: identity(checked_path(
                 Path(inventory.root), entry.rel_path).stat()) for entry in self.prepared.files}
-            folders, metadata = self._folder_rows(inventory, len(rows)+1)
+            with log_stage(log, "Existing folder sampling"):
+                folders, metadata = self._folder_rows(inventory, len(rows)+1)
+            log.info("Folder catalog: candidates=%d protected=%d", len(folders), len(self._protected))
             evidence_rows = [{'id': r['id'], 'origin': 'file', 'subject': r['subject'],
                               'kind': r['kind'], 'basis':r['basis'],
                               'explicit_identity':bool(self.prepared.summaries[r['rel_path']].identifiers),
                               'evidence': r['evidence']} for r in rows] + folders
-            profiles = self._profiles(evidence_rows)
+            with log_stage(log, "Subject profiling"):
+                profiles = self._profiles(evidence_rows)
             self._canonicalize_courses(profiles, evidence_rows)
             for row in rows:
                 row['profile'] = profiles[row['id']]
@@ -531,8 +540,11 @@ class Planner:
                 elif profile.scope_kind == 'kind':
                     profile.scope_kind = 'topic'
                 self._add_destination(path, profile, set(), families, existing=True, source=meta['source'])
-            self._groups(rows)
-            chosen = self._match_files(rows)
+            with log_stage(log, "Group discovery"):
+                self._groups(rows)
+            with log_stage(log, "Destination matching"):
+                chosen = self._match_files(rows)
+            log.info("Destination matches: files=%d destinations=%d", len(chosen), len(self.destinations))
             by_target = defaultdict(list)
             for row in rows:
                 if row['rel_path'] in chosen:
@@ -575,12 +587,14 @@ class Planner:
                 action.id = str(identifier)
             from app.core.reviewer import Reviewer
             self.progress_cb('Reviewing the complete preview…')
-            Reviewer(self.runtime, self.progress_cb, self.cancelled,
-                shortcuts_movable=self.shortcuts_movable, executables_movable=self.executables_movable,
-                allow_suffix_on_collision=self.allow_suffix_on_collision).review(self._plan, rows, self.destinations)
+            with log_stage(log, "Independent review"):
+                Reviewer(self.runtime, self.progress_cb, self.cancelled,
+                    shortcuts_movable=self.shortcuts_movable, executables_movable=self.executables_movable,
+                    allow_suffix_on_collision=self.allow_suffix_on_collision).review(self._plan, rows, self.destinations)
             for source, reason in self._plan.review['held'].items():
                 self.decisions[source] = {'folder': '', 'reason': reason}
             self._plan.excluded_count = inventory.total_files - len(self._plan.actions)
+            log.info("Reviewed preview: moves=%d held=%d", len(self._plan.actions), self._plan.excluded_count)
             return self._plan
         except (LLMServerError, InterruptedError):
             self.runtime.shutdown()
