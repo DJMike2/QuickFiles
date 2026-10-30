@@ -18,6 +18,13 @@ SEARCH_SORTS = ['relevance', 'newest', 'oldest', 'largest', 'smallest']
 log = logging.getLogger(__name__)
 
 
+def _split_existing(rows, existing):
+    # Split the larger input, including catalogs that cannot fit beside two files.
+    return len(existing) > 1 and (len(rows) <= 2 or
+        len(json.dumps(existing, ensure_ascii=False).encode('utf-8')) >
+        len(json.dumps(rows, ensure_ascii=False).encode('utf-8')))
+
+
 class SummaryGroundingError(LLMServerError):
     """A completed summary failed evidence checks; the file must remain unassigned."""
 
@@ -75,7 +82,8 @@ class AIRuntime(ModelRuntime):
         server = self._ensure_started(status_cb, cancelled)
         raw = server.chat(system, user, max_tokens or settings["max_tokens"],
                                 settings["temperature"] if temperature is None else temperature,
-                                schema=schema, grammar=grammar)
+                                schema=schema, grammar=grammar,
+                                check_context=system in (GROUPS_PROMPT, REVIEW_PROMPT))
         if cancelled and cancelled():
             raise InterruptedError("Planning stopped")
         return raw
@@ -260,9 +268,19 @@ class AIRuntime(ModelRuntime):
                 ensure_ascii=False), status_cb, cancelled, schema=schema,
                 max_tokens=max(512, 192*max_groups+128), temperature=0)
         except (ContextTooLargeError, IncompleteResponseError):
+            if _split_existing(rows, existing):
+                middle = len(existing) // 2
+                log.info('Splitting shared-subject catalog: files=%d folders=%d', len(rows), len(existing))
+                groups = (self.propose_groups(rows, existing[:middle], status_cb, cancelled)
+                          + self.propose_groups(rows, existing[middle:], status_cb, cancelled))
+                unique = {(g['path'], tuple(sorted(set(g['members'])))): g for g in groups}
+                return list(unique.values())
             if len(rows) <= 2:
-                raise LLMServerError('The local model could not finish grouping these files')
+                log.warning('Shared-subject comparison could not complete: files=%d folders=%d; leaving files ungrouped',
+                            len(rows), len(existing))
+                return []
             middle = len(rows) // 2
+            log.info('Splitting shared-subject files: files=%d folders=%d', len(rows), len(existing))
             # Deterministic overlapping boundary retains the possibility of a two-file group.
             return (self.propose_groups(rows[:middle + 1], existing, status_cb, cancelled)
                     + self.propose_groups(rows[middle:], existing, status_cb, cancelled))
@@ -367,12 +385,21 @@ class AIRuntime(ModelRuntime):
                 ensure_ascii=False, separators=(',', ':')),
                 status_cb, cancelled, schema=schema, max_tokens=230 * len(files) + 128, temperature=0)
         except (ContextTooLargeError, IncompleteResponseError):
-            if len(files) <= 2:
-                return held('Independent review did not complete')
-            middle = len(files) // 2
-            # An overlapping member avoids manufacturing a one-file group at a split.
-            left = self.review_destination(files[:middle+1], destination, existing, status_cb, cancelled, _retry=_retry)
-            right = self.review_destination(files[middle:], destination, existing, status_cb, cancelled, _retry=_retry)
+            if _split_existing(files, existing):
+                middle = len(existing) // 2
+                log.info('Splitting independent-review catalog: files=%d folders=%d', len(files), len(existing))
+                left = self.review_destination(files, destination, existing[:middle], status_cb, cancelled, _retry=_retry)
+                right = self.review_destination(files, destination, existing[middle:], status_cb, cancelled, _retry=_retry)
+            else:
+                if len(files) <= 2:
+                    log.warning('Independent review could not complete: files=%d folders=%d; holding files',
+                                len(files), len(existing))
+                    return held('Independent review did not complete')
+                middle = len(files) // 2
+                log.info('Splitting independent-review files: files=%d folders=%d', len(files), len(existing))
+                # An overlapping member avoids manufacturing a one-file group at a split.
+                left = self.review_destination(files[:middle+1], destination, existing, status_cb, cancelled, _retry=_retry)
+                right = self.review_destination(files[middle:], destination, existing, status_cb, cancelled, _retry=_retry)
             result = {**left, **right}
             for identifier in left.keys() & right.keys():
                 if left[identifier]['verdict'] != 'keep':

@@ -139,7 +139,7 @@ class LLMServer:
         return command
 
     def chat(self, system, user, max_tokens, temperature, *, schema=None, grammar=None, images=(),
-             allow_truncated=False):
+             allow_truncated=False, check_context=False):
         """images are JPEG bytes for a server started with an mmproj; allow_truncated returns a
         length-limited answer instead of rejecting it (useful for short descriptions)."""
         if self._interrupted.is_set():
@@ -165,6 +165,20 @@ class LLMServer:
         if grammar is not None:
             payload["grammar"] = grammar
         try:
+            # Small text requests need no extra round trip. Larger ones use the
+            # engine's tokenizer and chat template, including the output allowance.
+            if check_context:
+                budget = self.settings['context_tokens'] - max_tokens - 32
+                if budget <= 0:
+                    raise ContextTooLargeError('Request exceeds the local model context budget')
+                if len((system + user).encode('utf-8')) + 256 > budget:
+                    count = self._request('chat/completions/input_tokens', payload)['input_tokens']
+                    if type(count) is not int or count < 0:
+                        raise ValueError('Invalid input token count')
+                    if self._interrupted.is_set():
+                        raise InterruptedError('AI request stopped')
+                    if count > budget:
+                        raise ContextTooLargeError('Request exceeds the local model context budget')
             choice = self._request("chat/completions", payload)["choices"][0]
             if choice.get("finish_reason") == "length" and allow_truncated and choice["message"].get("content"):
                 return choice["message"]["content"]
