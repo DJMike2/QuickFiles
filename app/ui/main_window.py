@@ -1,6 +1,7 @@
 """Desktop scan → preview → apply → undo workflow."""
 from __future__ import annotations
 
+import logging
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -34,6 +35,9 @@ from app.ui.settings_dialog import SettingsDialog
 from app.ui.theme import apply_theme
 from app.ui.title_bar import EdgeResizer, TitleBar
 from app.ui.worker import Worker
+from app.logging_setup import log_stage
+
+log = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -427,6 +431,7 @@ class MainWindow(QMainWindow):
         root = Path(self.path.text().strip()).expanduser()
         valid, reason = validate_root_selection(root)
         if not valid:
+            log.warning("Organizer scan rejected: %s", reason)
             QMessageBox.warning(self, "Cannot scan", reason)
             return
         root = root.resolve()
@@ -442,9 +447,14 @@ class MainWindow(QMainWindow):
         self._show_banner("")
 
         def operation(status, progress, cancelled):
+            log.info("Scan location: %s", root)
             status("Scanning folder…")
-            inventory = Scanner(root, **options, cancelled=cancelled,
-                                progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
+            with log_stage(log, "Inventory"):
+                inventory = Scanner(root, **options, cancelled=cancelled,
+                                    progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
+            log.info("Inventory: files=%d folders=%d protected=%d skipped=%d errors=%d",
+                     inventory.total_files, len(inventory.directories), len(inventory.protected_projects),
+                     inventory.skipped_count, inventory.error_count)
             if cancelled():
                 raise InterruptedError("Scan stopped")
             plan = Planner(self.ctx.runtime, progress_cb=status, cancelled=cancelled,
@@ -455,11 +465,14 @@ class MainWindow(QMainWindow):
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
-            report = Validator(root, shortcuts_movable=shortcuts,
-                               executables_movable=executables).validate_plan(plan)
+            with log_stage(log, "Plan validation"):
+                report = Validator(root, shortcuts_movable=shortcuts,
+                                   executables_movable=executables).validate_plan(plan)
             plan.actions = report.valid_actions
             plan.warnings = report.warnings
             plan.excluded_count = inventory.total_files - len({a.src_rel for a in report.valid_actions})
+            log.info("Preview ready: moves=%d held=%d warnings=%d",
+                     len(plan.actions), plan.excluded_count, len(plan.warnings))
             return inventory, plan
 
         self._start("scan", operation)
@@ -509,7 +522,7 @@ class MainWindow(QMainWindow):
             finally:
                 self.ctx.journal.close()
 
-        self.worker = Worker(work, self)
+        self.worker = Worker(work, self, operation_name=kind)
         self.worker.status.connect(self.status.setText)
         self.worker.progress.connect(self._progress)
         self.worker.finished.connect(self._job_finished)
@@ -586,6 +599,7 @@ class MainWindow(QMainWindow):
         root = Path(self.search_panel.folder.text().strip()).expanduser()
         valid, reason = validate_root_selection(root)
         if not valid:
+            log.warning("File search rejected: %s", reason)
             self.search_panel.set_status(reason)
             return
         if not self.ctx.runtime.available:
@@ -601,7 +615,7 @@ class MainWindow(QMainWindow):
             with activity("search", cancelled) if activity else nullcontext():
                 return self.ctx.search.search(root, query, status, progress, cancelled)
 
-        self.search_worker = Worker(operation, self)
+        self.search_worker = Worker(operation, self, operation_name="search")
         self.search_worker.status.connect(self.search_panel.set_status)
         self.search_worker.progress.connect(lambda value: self.search_panel.set_status(value[2]))
         self.search_worker.finished.connect(self._search_finished)

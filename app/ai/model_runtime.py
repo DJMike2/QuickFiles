@@ -1,5 +1,6 @@
 """Serialize background model loading, use, cancellation, and shutdown."""
 from concurrent.futures import Future
+from contextvars import copy_context
 import threading
 
 
@@ -55,7 +56,8 @@ class ModelRuntime:
                 else:
                     future.set_result(server)
 
-            self._loader = threading.Thread(target=load, name='local-model-loader', daemon=True)
+            self._loader = threading.Thread(target=copy_context().run, args=(load,),
+                                            name='local-model-loader', daemon=True)
             self._loader.start()
             return future
 

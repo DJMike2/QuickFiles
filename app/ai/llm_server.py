@@ -77,6 +77,9 @@ class LLMServer:
             if cancelled():
                 raise InterruptedError("Model loading stopped")
             try:
+                started = time.monotonic()
+                log.info("Starting AI engine: backend=%s model=%s context_tokens=%s requested_gpu_layers=%s",
+                         backend, self.model_path.name, self.settings["context_tokens"], layers)
                 # Choose a free local port without terminating unrelated processes.
                 with socket.socket() as sock:
                     sock.bind(("127.0.0.1", 0))
@@ -100,6 +103,8 @@ class LLMServer:
                         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1) as response:
                             if response.status == 200:
                                 self.backend = backend
+                                log.info("AI engine ready: backend=%s model=%s startup_seconds=%.3f",
+                                         backend, self.model_path.name, time.monotonic() - started)
                                 return
                     except (OSError, urllib.error.URLError):
                         pass
