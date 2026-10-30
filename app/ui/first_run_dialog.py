@@ -58,9 +58,6 @@ class FirstRunDialog(QDialog):
         if self._installed():
             self.status.setText("The local AI engine and models are installed.")
             self.install.setText("Close")
-        elif hardware.os_warning:
-            self.status.setText(hardware.os_warning)
-            self.install.setEnabled(False)
 
     def _installed(self):
         return self.ctx.runtime.available and self.ctx.model_manager.vision_downloaded

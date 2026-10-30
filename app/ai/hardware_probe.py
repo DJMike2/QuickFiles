@@ -24,7 +24,6 @@ class HardwareProfile:
     gpu_name: str = ""
     backend: str = "cpu"
     vram_gb: float = 0
-    os_warning: str = ""
 
 
 def _run(arguments):

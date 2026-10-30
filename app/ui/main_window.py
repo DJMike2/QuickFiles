@@ -673,10 +673,7 @@ class MainWindow(QMainWindow):
         if self._close_pending:
             return
         if not self.ctx.runtime.available:
-            if self.ctx.hardware.os_warning:
-                self._show_banner(self.ctx.hardware.os_warning)
-            else:
-                self._setup()
+            self._setup()
 
     def closeEvent(self, event):
         # Closing the window exits, even when folder watching is enabled.

@@ -327,25 +327,24 @@ class SearchPanel(QWidget):
 
     @staticmethod
     def _format_file_size(value) -> str:
-        """Human-readable size for indexed JSON metadata or disk stat bytes."""
+        """Human-readable size from a search result or disk stat bytes."""
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-            return str(value) if value not in (None, "") else "—"
+            return "—"
         amount = float(value)
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if amount < 1024 or unit == "TB":
                 return f"{amount:.0f} B" if unit == "B" else f"{amount:.1f} {unit}"
             amount /= 1024
-        return "—"
 
     @staticmethod
     def _format_modified(value) -> str:
-        """Accept an ISO date string or a Unix timestamp from search JSON."""
+        """A Unix timestamp from a search result or disk stat."""
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             try:
                 return datetime.fromtimestamp(value).strftime("%b %d, %Y · %I:%M %p")
             except (OverflowError, OSError, ValueError):
                 return "—"
-        return str(value) if value not in (None, "") else "—"
+        return "—"
 
     def _update_file_preview(self, record: object) -> None:
         """Show the hovered result; never ask the AI to create a summary.

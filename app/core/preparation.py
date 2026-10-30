@@ -102,34 +102,19 @@ class Preparation:
             summary = FileSummary(entry.rel_path, basis, evidence.status, ' … '.join(excerpts),
                 header_identity or evidence.text[:96], [header_identity] if header_identity else [], excerpts,
                 evidence.limitation + '; literal excerpts, not an inferred subject')
-        elif basis in {'filename', 'archive_listing'} and kind_of(entry) in KIND_LABELS:
+        elif basis in {'filename', 'archive_listing'} and (label := KIND_LABELS.get(kind_of(entry))):
             # The extension already proves a broad format category. Asking a
             # model to restate it adds no evidence about unread contents.
-            label = KIND_LABELS[kind_of(entry)]
             summary = FileSummary(entry.rel_path, basis, evidence.status,
                 (f'Filename: {entry.filename}; kind from extension: {label}'
                  + ('; '+source[:600] if basis == 'archive_listing' else '')), label, [],
                 [entry.filename], evidence.limitation)
         else:
-            try:
-                value = self.runtime.summarize_file(source, basis=basis, status_cb=self.progress,
-                                                    cancelled=self.cancelled)
-            except SummaryGroundingError:
-                if basis == 'filename' and kind_of(entry) in KIND_LABELS:
-                    value = {'summary': f'Filename: {entry.filename}',
-                             'subject': KIND_LABELS[kind_of(entry)], 'identifiers': [],
-                             'quotes': [entry.filename]}
-                else:
-                    raise
+            value = self.runtime.summarize_file(source, basis=basis, status_cb=self.progress,
+                                                cancelled=self.cancelled)
             summary = FileSummary(entry.rel_path, basis, evidence.status, value["summary"],
                                   value["subject"], value["identifiers"], value["quotes"],
                                   evidence.limitation)
-            if basis == 'filename' and not summary.subject and kind_of(entry) in KIND_LABELS:
-                # A known extension supports a broad kind even when a media subject
-                # cannot be read. This adds no course/client/topic inference.
-                summary.subject = KIND_LABELS[kind_of(entry)]
-                summary.summary = f'Filename: {entry.filename}; kind from extension: {summary.subject}'
-                summary.quotes = [entry.filename]
         return summary
 
     def prepare(self, inventory):
