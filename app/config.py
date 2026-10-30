@@ -34,11 +34,21 @@ def app_data_path() -> Path:
     return base / APP_DATA_DIR_NAME
 
 
+def desktop_path() -> Path:
+    # Qt resolves Windows known-folder redirection and Linux desktop settings.
+    from PySide6.QtCore import QStandardPaths
+
+    path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+    return Path(path) if path else Path.home() / "Desktop"
+
+
 class AppConfig:
     def __init__(self, app_data_dir: Path | None = None):
         self.app_data_dir = app_data_dir or app_data_path()
         self._path = self.app_data_dir / "config.json"
         self._data = copy.deepcopy(DEFAULTS)
+        desktop = desktop_path()
+        self._data.update(allowed_root=str(desktop), search_root=str(desktop))
         stored = None
         try:
             loaded = json.loads(self._path.read_text(encoding="utf-8"))
@@ -52,6 +62,16 @@ class AppConfig:
         # Older settings used one switch for both shortcuts and executables.
         if isinstance(stored, dict) and "executables_movable" not in stored:
             self._data["executables_movable"] = bool(stored.get("shortcuts_movable", True))
+        # Repair only the missing legacy default, never a custom selection.
+        legacy = Path.home() / "Desktop"
+        if desktop != legacy:
+            try:
+                if desktop.is_dir() and not legacy.is_dir():
+                    for key in ("allowed_root", "search_root"):
+                        if self._data[key] == str(legacy):
+                            self._data[key] = str(desktop)
+            except OSError as exc:
+                logging.getLogger(__name__).warning("Could not check the old Desktop location: %s", exc)
 
     def get(self, key, default=None):
         return self._data.get(key, default)
