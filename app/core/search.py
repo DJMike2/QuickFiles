@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 SKIP_DIRECTORIES = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', 'build', 'dist'}
 # Bump when the indexed document format changes so cached vectors are rebuilt.
 INDEX_FORMAT = 'map2'
+# Refresh PDF excerpts after reader changes without rebuilding other file types.
+PDF_TEXT_VERSION = '+pdf1'
 # Minimum hybrid score for a match; a kind or format filter already vouches for every
 # candidate, so less meaning evidence is needed then ("python scripts about parsing").
 MATCH_SCORE = .48
@@ -152,11 +154,16 @@ class FileSearch:
         return f'{self.encoder}+vision:{vision.fingerprint}'
 
     def _reusable(self, old, extension, vision, described):
-        if old['encoder'] == self.encoder:
+        encoder = old['encoder']
+        if extension == '.pdf':
+            if not encoder.endswith(PDF_TEXT_VERSION):
+                return False
+            encoder = encoder.removesuffix(PDF_TEXT_VERSION)
+        if encoder == self.encoder:
             # Undescribed media is described once a vision model is available.
             return not (vision and visual_kind(extension, old['text']))
         # Described media is kept, even without the vision model, until a different one is installed.
-        return old['encoder'].startswith(self.encoder + '+vision:') and described in (None, old['encoder'])
+        return encoder.startswith(self.encoder + '+vision:') and described in (None, encoder)
 
     def search(self, root, query, status_cb=None, progress_cb=None, cancelled=None):
         status = status_cb or (lambda message: None)
@@ -234,9 +241,12 @@ class FileSearch:
                 if info.st_mtime_ns != row['mtime_ns'] or info.st_size != row['size']:
                     continue  # An edited file is refreshed on the next search.
                 row['vector'] = vector.astype('<f4').tobytes()
+                encoder = row.get('encoder', self.encoder)
+                if Path(row['path']).suffix.lower() == '.pdf':
+                    encoder += PDF_TEXT_VERSION
                 connection.execute('INSERT OR REPLACE INTO search_files VALUES(?,?,?,?,?,?,?)',
                     (str(root), row['path'], row['mtime_ns'], row['size'], row['text'],
-                     row['vector'], row.get('encoder', self.encoder)))
+                     row['vector'], encoder))
                 current.append(row)
             connection.commit()
             pending.clear()

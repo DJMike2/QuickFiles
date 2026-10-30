@@ -3,8 +3,11 @@
 Every function returns None when the file cannot be decoded (corrupt, unsupported codec, or the
 optional imaging libraries are missing), so indexing never fails because of one bad file.
 """
+from contextlib import closing
 import io
 import logging
+
+from app.ai.content import pdf_document
 
 log = logging.getLogger(__name__)
 # Long side in pixels: enough for readable screenshots and scans, small enough to stay fast.
@@ -64,14 +67,10 @@ def video_frames(path, side=IMAGE_SIDE, count=VIDEO_FRAMES):
 def scanned_page(path, side=SCAN_SIDE):
     """The first page of a PDF without a text layer, rendered like a scan."""
     try:
-        import pypdfium2 as pdfium
-        document = pdfium.PdfDocument(str(path))
-        try:
-            page = document[0]
+        with pdf_document(path) as document, closing(document[0]) as page:
             width, height = page.get_size()
-            return _jpeg(page.render(scale=side / max(width, height, 1)).to_pil(), side)
-        finally:
-            document.close()
+            with closing(page.render(scale=side / max(width, height, 1))) as bitmap:
+                return _jpeg(bitmap.to_pil(), side)
     except Exception:
         log.debug('Could not render PDF page for description: %s', path, exc_info=True)
         return None
