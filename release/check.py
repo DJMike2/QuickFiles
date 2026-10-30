@@ -18,7 +18,7 @@ def _run_checks(engine):
     from PySide6.QtCore import qVersion
     from PySide6.QtWidgets import QApplication
 
-    from app.ai.content import read_content
+    from app.ai.content import _pdfium_text, read_content
     from app.ai.llm_server import engine_environment
     from app.ai.media import image_frame, scanned_page
     from app.bootstrap import AppContext
@@ -50,6 +50,10 @@ def _run_checks(engine):
         page[NameObject("/Contents")] = writer._add_object(stream)
         writer.write(files / "document.pdf")
         assert len(PdfReader(files / "document.pdf").pages) == 1
+        writer.encrypt("", owner_password="quickfiles-check", algorithm="RC4-128")
+        writer.write(root / "encrypted.pdf")
+        assert "QuickFiles compatibility check" in _pdfium_text(root / "encrypted.pdf", 1)
+        writer.close()
         Image.new("RGB", (32, 32), "white").save(files / "picture.png")
         assert image_frame(files / "picture.png").startswith(b"\xff\xd8")
         assert scanned_page(files / "document.pdf").startswith(b"\xff\xd8")

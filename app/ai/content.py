@@ -1,4 +1,5 @@
 """Read small local text excerpts for the LLM; never execute document contents."""
+from contextlib import closing, contextmanager
 import html
 import logging
 from pathlib import Path
@@ -6,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 
@@ -13,11 +15,39 @@ from app.constants import READABLE_EXTENSIONS
 from app.platforms import external_environment
 
 log = logging.getLogger(__name__)
+_PDFIUM_LOCK = threading.Lock()
 
 
 def _check_cancelled(cancelled):
     if cancelled and cancelled():
         raise InterruptedError('File reading stopped')
+
+
+@contextmanager
+def pdf_document(path, *, cancelled=None):
+    # PDFium is not thread-safe, including calls on different documents.
+    _check_cancelled(cancelled)
+    while not _PDFIUM_LOCK.acquire(timeout=0.05):
+        _check_cancelled(cancelled)
+    try:
+        _check_cancelled(cancelled)
+        import pypdfium2 as pdfium
+        with closing(pdfium.PdfDocument(str(path))) as document:
+            yield document
+    finally:
+        _PDFIUM_LOCK.release()
+
+
+def _pdfium_text(path, pages, *, cancelled=None):
+    chunks = []
+    limit = 12000 * pages
+    with pdf_document(path, cancelled=cancelled) as document:
+        for index in range(min(pages, len(document))):
+            _check_cancelled(cancelled)
+            with closing(document[index]) as page, closing(page.get_textpage()) as textpage:
+                chunks.append(textpage.get_text_bounded()[:limit])
+        _check_cancelled(cancelled)
+    return ' '.join(chunks)[:limit]
 
 
 def _pdf_text(path, pages=1, *, cancelled=None):
@@ -48,23 +78,33 @@ def _pdf_text(path, pages=1, *, cancelled=None):
             log.warning('PDF reader failed for %s (exit %s): %s', path, result.returncode,
                         result.stderr[:2048].decode('utf-8', 'replace').strip())
         else:
-            return result.stdout[:12000 * pages].decode("utf-8", "replace")
-    # Use the bundled reader if Poppler is missing or fails. Large PDFs stay filename-only.
+            text = result.stdout[:12000 * pages].decode("utf-8", "replace")
+            if text.strip():
+                return text
+    # Keep normal extraction unchanged; PDFium recovers encrypted or unsupported PDFs.
     if path.stat().st_size <= 50 * 1024 * 1024:
         try:
             from pypdf import PdfReader
-            reader = PdfReader(path, strict=False)
-            chunks = []
-            for page in reader.pages[:pages]:
-                _check_cancelled(cancelled)
-                chunks.append(page.extract_text() or "")
+            with path.open('rb') as stream:
+                reader = PdfReader(stream, strict=False)
+                chunks = []
+                for page in reader.pages[:pages]:
+                    _check_cancelled(cancelled)
+                    chunks.append(page.extract_text() or "")
             _check_cancelled(cancelled)
-            return " ".join(chunks)[:12000 * pages]
+            text = " ".join(chunks)[:12000 * pages]
+            if text.strip():
+                return text
+        except InterruptedError:
+            raise
+        except Exception:
+            log.debug('Primary PDF reader failed for %s; trying PDFium', path, exc_info=True)
+        try:
+            return _pdfium_text(path, pages, cancelled=cancelled)
         except InterruptedError:
             raise
         except Exception:
             log.warning('PDF reader failed for %s', path, exc_info=True)
-            return ""  # Encrypted, malformed and image-only PDFs need no guessed content.
     return ""
 
 
