@@ -308,13 +308,10 @@ class SearchPanel(QWidget):
         self.searchRequested.emit(query)
 
     def _update_response(self, payload: dict) -> None:
-        total = len(payload.get("results", []))
-        self.response.setText(str(payload.get("answer") or f"Found {total} matching files."))
-        query = str(payload.get("query") or "")
-        self.query.setText(query)
-        self.latest_prompt.setText(query)
-        if isinstance(payload.get('root'), str):
-            self.folder.setText(payload['root'])
+        self.response.setText(payload["answer"])
+        self.query.setText(payload["query"])
+        self.latest_prompt.setText(payload["query"])
+        self.folder.setText(payload["root"])
 
     @staticmethod
     def _format_file_size(value) -> str:
@@ -351,30 +348,28 @@ class SearchPanel(QWidget):
             self.meta_availability.setText("Hover over a result circle to see file information.")
             return
 
-        path = str(record.get("path") or "")
-        name = str(record.get("name") or (Path(path).name if path else "Unnamed file"))
-        file_type = str(record.get("type") or Path(name).suffix.lstrip(".") or "File")
-        raw_size = record.get("size_bytes")
-        raw_modified = record.get("modified")
+        path, name = record["path"], record["name"]
+        file_type = record["type"] or "File"  # Empty for files without an extension.
+        raw_size = record["size_bytes"]
+        raw_modified = record["modified"]
 
         # Checking stat does not open or read file contents or load a model.
         available = False
-        if path:
-            try:
-                target = Path(path)
-                if target.is_file():
-                    stat = target.stat()
-                    raw_size = stat.st_size
-                    raw_modified = stat.st_mtime
-                    available = True
-            except OSError:
-                pass
+        try:
+            target = Path(path)
+            if target.is_file():
+                stat = target.stat()
+                raw_size = stat.st_size
+                raw_modified = stat.st_mtime
+                available = True
+        except OSError:
+            pass
 
         self.meta_file_name.setText(name)
         self.meta_type.setText("Type: " + file_type.upper())
         self.meta_size.setText("Size: " + self._format_file_size(raw_size))
         self.meta_modified.setText("Last modified: " + self._format_modified(raw_modified))
-        self.meta_location.setText("Location: " + (path or "—"))
+        self.meta_location.setText("Location: " + path)
         self.meta_availability.setText(
             "Click its circle to open it." if available
             else "File not accessible here (moved or deleted)."
