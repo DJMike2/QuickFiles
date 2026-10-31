@@ -132,7 +132,7 @@ class LLMServer:
             command += ["--embedding", "--pooling", self.settings["pooling"], "--parallel", "1",
                         "--batch-size", "2048", "--ubatch-size", "2048"]
         if self.mmproj:
-            command += ["--mmproj", str(self.mmproj), "--parallel", "1"]
+            command += ["--mmproj", str(self.mmproj), "--parallel", str(self.settings["parallel"])]
         elif not self.embedding and self.settings.get("speculative"):
             # The model's own multi-token-prediction layers draft tokens that are then verified.
             command += ["--spec-type", self.settings["speculative"]]

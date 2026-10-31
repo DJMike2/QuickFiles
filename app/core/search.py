@@ -259,6 +259,8 @@ class FileSearch:
 
         walked = []
         reading = ThreadPoolExecutor(READERS, thread_name_prefix='search-read')
+        # One request per vision engine slot and one more waiting, ready when a slot frees up.
+        describing = ThreadPoolExecutor(vision.slots + 1 if vision else 1, thread_name_prefix='search-describe')
 
         def index_walked():
             """Index the walked files in walk order, so rows and embedding batches keep that order."""
@@ -338,10 +340,12 @@ class FileSearch:
             flush()
             done = 0
             try:
+                descriptions = describing.map(lambda job: vision.describe(*job, status, cancelled),
+                                              [(root / row['path'], row.pop('kind')) for row in visual])
                 for row in visual:
                     check()
                     status(f'Describing photos, videos and scans… {done + 1:,}/{len(visual):,}')
-                    description = vision.describe(root / row['path'], row.pop('kind'), status, cancelled)
+                    description = next(descriptions)
                     pending.append({**row, 'text': description, 'encoder': described,
                                     'document': self._document(row['path'], description)})
                     done += 1
@@ -351,10 +355,11 @@ class FileSearch:
                 # Index the rest without descriptions; they are described on a later search.
                 log.warning('Vision model failed; indexing remaining media without descriptions', exc_info=True)
                 for row in visual[done:]:
-                    row.pop('kind', None)
                     pending.append({**row, 'document': self._document(row['path'], row['text'])})
         finally:
             reading.shutdown(cancel_futures=True)
+            # Running requests finish first: one could otherwise restart the engine after its shutdown.
+            describing.shutdown(cancel_futures=True)
             if vision:
                 vision.shutdown()  # Free the GPU for the search model.
         self.runtime.prestart(cancelled)
