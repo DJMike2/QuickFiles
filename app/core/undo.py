@@ -12,8 +12,6 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class UndoResult:
-    batch_id: int
-    total: int = 0
     reversed_ok: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
@@ -32,7 +30,7 @@ class UndoEngine:
         if resolve_safe(Path(batch.root)) != self.root:
             raise ValueError("Journal root does not match the selected batch")
         operations = [op for op in batch.ops if op.succeeded and not op.undone]
-        result = UndoResult(batch_id, total=len(operations))
+        result = UndoResult()
         for index, operation in enumerate(reversed(operations)):
             self.progress_cb(index + 1, len(operations), operation.dst_abs)
             try:

@@ -8,14 +8,13 @@ import os
 import sys
 from pathlib import Path
 
-from app.constants import APP_DATA_DIR_NAME, DEFAULT_CONTENT_READ_BYTES
+from app.constants import APP_DATA_DIR_NAME
 
 DEFAULTS = {
     "theme": "light",
     "allowed_root": str(Path.home() / "Desktop"),
     "search_root": str(Path.home() / "Desktop"),
     "exclude_patterns": ["*.tmp", "~$*", "Thumbs.db", ".DS_Store"],
-    "content_read_bytes": DEFAULT_CONTENT_READ_BYTES,
     "shortcuts_movable": True,
     "executables_movable": True,
     "watch_new_files": False,

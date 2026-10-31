@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import (
@@ -273,7 +272,6 @@ class _GraphCanvas(QGraphicsView):
 
 class SearchGraphWidget(QWidget):
     file_clicked = Signal(str)
-    search_selected = Signal(str)
     results_displayed = Signal(object)
     history_view_changed = Signal(bool)
     file_hovered = Signal(object)  # Dict on hover; None when the graph resets.
@@ -404,10 +402,6 @@ class SearchGraphWidget(QWidget):
 
     def show_search_results(self, data: dict[str, Any]) -> None:
         # New searches add history; showing an older entry does not.
-        if not isinstance(data, dict):
-            raise ValueError("Search results must be a JSON object")
-        if not isinstance(data.get("results", []), list):
-            raise ValueError("'results' must be a JSON array")
         self._cancel_transition()
         self.file_hovered.emit(None)
         # Snapshot so another component can't mutate entries in history.
@@ -432,7 +426,6 @@ class SearchGraphWidget(QWidget):
 
         def notify() -> None:
             self.results_displayed.emit(payload)
-            self.search_selected.emit(str(payload.get("query", "")))
             self.history_view_changed.emit(False)
 
         # Animate when returning from history; otherwise render immediately.
@@ -464,8 +457,8 @@ class SearchGraphWidget(QWidget):
         # Clicking it restores the JSON snapshot without rerunning the model.
         for order, history_index in enumerate(recent):
             record = self._history[history_index]
-            query = str(record.get("query") or "Untitled search")
-            count = len(record.get("results", []))
+            query = record["query"]
+            count = len(record["results"])
             node = _Node(query, f"{count} files", "history_entry",
                          lambda idx=history_index: self.show_history_item(idx), "#c4b5fd")
             self._scene.addItem(node)
@@ -516,17 +509,12 @@ class SearchGraphWidget(QWidget):
     def _draw(self, payload: dict[str, Any]) -> None:
         # Switch back to the standard query-in-center / files-around-it view.
         self._scene.clear()
-        query = str(payload.get("query") or "Your search")
-        raw_results = payload.get("results", [])
-        # The ranking is computed locally when numeric similarity scores exist.
-        indexed = [x for x in raw_results if isinstance(x, dict)]
-        indexed.sort(key=lambda x: float(x.get("score", 0))
-                     if isinstance(x.get("score", 0), (int, float)) else 0,
-                     reverse=True)
-        results = indexed[:self.max_results]
-        total = len(indexed)
+        # Highest score first.
+        ranked = sorted(payload["results"], key=lambda x: x["score"], reverse=True)
+        results = ranked[:self.max_results]
+        total = len(ranked)
 
-        center = _Node(query, f"{total} matching files", "search", lambda: None,
+        center = _Node(payload["query"], f"{total} matching files", "search", lambda: None,
                        "#93c5fd")
         self._scene.addItem(center)
         center.setPos(0, 0)
@@ -548,9 +536,8 @@ class SearchGraphWidget(QWidget):
         else:
             result_radius = 395
         for index, item in enumerate(results):
-            path = str(item.get("path") or "")
-            filename = str(item.get("name") or Path(path).name or f"File {index + 1}")
-            file_type = str(item.get("type") or Path(filename).suffix.lstrip(".") or "FILE")
+            path, filename = item["path"], item["name"]
+            file_type = item["type"] or "FILE"  # Empty for files without an extension.
             # We still rank by score, but don't show any numerical match rating.
             node = _Node(filename, file_type.upper(), "file",
                          lambda p=path: self.file_clicked.emit(p),
@@ -560,7 +547,7 @@ class SearchGraphWidget(QWidget):
                          lambda hovering, record=item: (
                              self.file_hovered.emit(record) if hovering else None
                          ))
-            node.setToolTip(path or filename)
+            node.setToolTip(path)
             self._scene.addItem(node)
             if len(results) == 1:
                 angle = math.radians(90)

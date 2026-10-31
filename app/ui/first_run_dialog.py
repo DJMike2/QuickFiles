@@ -128,11 +128,3 @@ class FirstRunDialog(QDialog):
             self._cancel()
             return
         super().reject()
-
-    def closeEvent(self, event):
-        if self.worker:
-            self._close_pending = True
-            self._cancel()
-            event.ignore()
-        else:
-            event.accept()

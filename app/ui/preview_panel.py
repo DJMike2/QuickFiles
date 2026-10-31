@@ -4,7 +4,6 @@ from __future__ import annotations
 import copy
 from html import escape
 import sys
-import uuid
 from pathlib import Path, PurePosixPath
 
 from PySide6.QtCore import QAbstractItemModel, QMimeData, QModelIndex, QRect, QSize, Qt, QTimer, Signal
@@ -504,11 +503,6 @@ class PreviewPanel(QWidget):
         self.details.addWidget(row)
 
     def set_plan(self, inventory, plan, shortcuts_movable=False, executables_movable=False):
-        if any(a.type != 'mkdir' and a.source_identity is None for a in plan.actions):
-            # Sample/imported previews need the same stale-file protection as AI plans.
-            report = Validator(Path(plan.root), allow_suffix_on_collision=False,
-                shortcuts_movable=shortcuts_movable, executables_movable=executables_movable).validate_plan(plan)
-            plan.actions, plan.warnings = report.valid_actions, report.warnings
         if inventory is not self.inventory:
             self._order = None
             self._displaced = set()
@@ -562,7 +556,7 @@ class PreviewPanel(QWidget):
                 action.reason = "Destination edited in preview"
                 changed = True
         if not changed and not node.is_dir:
-            actions.append(PlanAction(str(uuid.uuid4()), "rename", old, new,
+            actions.append(PlanAction("rename", old, new,
                                       reason="Renamed in preview"))
             changed = True
         if not changed:
@@ -641,7 +635,7 @@ class PreviewPanel(QWidget):
                 action.reason = "Moved in preview"
                 changed = True
         if not changed:
-            actions.append(PlanAction(str(uuid.uuid4()), "move", source, new_rel,
+            actions.append(PlanAction("move", source, new_rel,
                                       reason="Moved in preview"))
         return actions
 
@@ -660,7 +654,7 @@ class PreviewPanel(QWidget):
             source = file_node.action.src_rel if file_node.action else file_node.rel_path
             if source in known or dest == source:
                 continue
-            actions.append(PlanAction(str(uuid.uuid4()), "move", source, dest,
+            actions.append(PlanAction("move", source, dest,
                                       reason="Moved in preview"))
             known.add(source)
         for directory in self.inventory.directories:
@@ -677,7 +671,7 @@ class PreviewPanel(QWidget):
             )
             exists = Path(self.plan.root).joinpath(*dest_dir.split("/")).is_dir()
             if not covered and not exists:
-                actions.append(PlanAction(str(uuid.uuid4()), "mkdir", directory, dest_dir,
+                actions.append(PlanAction("mkdir", directory, dest_dir,
                                           reason="Moved in preview"))
         return self._settle_folders(actions, displaced)
 

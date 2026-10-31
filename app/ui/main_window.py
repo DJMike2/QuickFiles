@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip(APP_NAME)
         tray_menu = QMenu(self)
         tray_menu.addAction("Show", self._show_from_tray)
-        tray_menu.addAction("Quit", self._quit_from_tray)
+        tray_menu.addAction("Quit", self.close)
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._tray_activated)
         self.winId()
@@ -325,7 +325,6 @@ class MainWindow(QMainWindow):
             self.status.setText("Local AI is not set up, so the new file was left in place.")
             return
         folders = dict(self._index.folders)
-        limit = self.config.get("content_read_bytes")
         shortcuts = self.config.get("shortcuts_movable")
         executables = self.config.get("executables_movable")
 
@@ -340,11 +339,11 @@ class MainWindow(QMainWindow):
                     entry = FileEntry(
                         path.name, path.name, extension, str(path), size_bytes=stat.st_size,
                         modified_ts=stat.st_mtime,
-                        is_conservative=extension in CONSERVATIVE_EXTENSIONS, depth=0,
+                        is_conservative=extension in CONSERVATIVE_EXTENSIONS,
                     )
                     files.append({
                         "id": index, "name": path.name, "rel_path": path.name,
-                        "hint": read_content(entry, limit), "source_identity": identity(stat),
+                        "hint": read_content(entry), "source_identity": identity(stat),
                     })
                 status("Asking local AI about the new file…")
                 assigned = self.ctx.runtime.assign_files(
@@ -357,7 +356,7 @@ class MainWindow(QMainWindow):
                     if not folder or cancelled():
                         continue
                     action = PlanAction(
-                        str(row["id"]), "move", row["name"], f"{folder}/{row['name']}",
+                        "move", row["name"], f"{folder}/{row['name']}",
                         category=folder, reason="Local AI matched the file to this folder",
                         source_identity=row['source_identity'],
                     )
@@ -373,9 +372,6 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
-
-    def _quit_from_tray(self):
-        self.close()
 
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -432,10 +428,7 @@ class MainWindow(QMainWindow):
         root = root.resolve()
         self.path.setText(str(root))
         self.config.set("allowed_root", str(root))
-        options = {
-            "content_read_bytes": self.config.get("content_read_bytes"),
-            "exclude_patterns": list(self.config.get("exclude_patterns")),
-        }
+        excludes = list(self.config.get("exclude_patterns"))
         shortcuts = self.config.get("shortcuts_movable")
         executables = self.config.get("executables_movable")
         self._invalidate()
@@ -445,7 +438,7 @@ class MainWindow(QMainWindow):
             log.info("Scan location: %s", root)
             status("Scanning folder…")
             with log_stage(log, "Inventory"):
-                inventory = Scanner(root, **options, cancelled=cancelled,
+                inventory = Scanner(root, exclude_patterns=excludes, cancelled=cancelled,
                                     progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
             log.info("Inventory: files=%d folders=%d protected=%d skipped=%d errors=%d",
                      inventory.total_files, len(inventory.directories), len(inventory.protected_projects),
@@ -552,13 +545,13 @@ class MainWindow(QMainWindow):
         elif worker.stopped or (kind == "scan" and worker.cancel_event.is_set()):
             self.status.setText("Stopped. No new plan was applied.")
         elif kind == "watch":
-            for name, folder in worker.result or []:
-                self._index.add(folder, name)
-                self._tray.showMessage(APP_NAME, f"{name} move to {folder}",
-                                       QSystemTrayIcon.MessageIcon.Information, 5000)
             moved = worker.result or []
+            for name, folder in moved:
+                self._index.add(folder, name)
+                self._tray.showMessage(APP_NAME, f"{name} moved to {folder}",
+                                       QSystemTrayIcon.MessageIcon.Information, 5000)
             self.status.setText(
-                f"{moved[-1][0]} move to {moved[-1][1]}" if moved else "New file left in place."
+                f"{moved[-1][0]} moved to {moved[-1][1]}" if moved else "New file left in place."
             )
         elif kind == "scan":
             self.inventory, self.plan = worker.result
@@ -571,8 +564,7 @@ class MainWindow(QMainWindow):
                 f"{self.plan.excluded_count:,} unchanged · {self.inventory.skipped_count:,} skipped · "
                 f"{self.inventory.error_count:,} scan errors"
             )
-            warnings = [warning.message for warning in self.plan.warnings]
-            self._show_banner("\n".join(warnings[:5]))
+            self._show_banner("\n".join(self.plan.warnings[:5]))
             self._learn_scan()
         else:
             result = worker.result
@@ -636,7 +628,7 @@ class MainWindow(QMainWindow):
         elif worker.stopped or worker.cancel_event.is_set():
             self.search_panel.set_status("Search stopped.")
         else:
-            self.search_panel.display_results(worker.result)
+            self.search_panel.graph.show_search_results(worker.result)
         worker.deleteLater()
         self._buttons()
         if self._close_pending:

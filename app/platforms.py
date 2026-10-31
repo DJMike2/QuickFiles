@@ -2,7 +2,6 @@
 import os
 import sys
 
-UNSUPPORTED_PLATFORM_MESSAGE = "QuickFiles supports only Windows and Linux."
 MIN_WINDOWS_BUILD = 17763  # Windows 10 version 1809.
 MIN_GLIBC = (2, 35)
 MIN_CUDA_GLIBC = (2, 38)
@@ -17,7 +16,7 @@ def glibc_version():
 
 def require_supported_platform():
     if sys.platform not in {"win32", "linux"}:
-        raise RuntimeError(UNSUPPORTED_PLATFORM_MESSAGE)
+        raise RuntimeError("QuickFiles supports only Windows and Linux.")
     if sys.platform == "win32":
         version = sys.getwindowsversion()
         if (version.major, version.build) < (10, MIN_WINDOWS_BUILD):

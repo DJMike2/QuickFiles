@@ -19,9 +19,7 @@ class TreeNode:
 
 
 def build_trees(inventory, plan, order=None, displaced=None):
-    before = _tree(inventory, None)
-    after = _tree(inventory, plan, order, displaced)
-    return before, after
+    return _tree(inventory, None), _tree(inventory, plan, order, displaced)
 
 
 def _tree(inventory, plan, order=None, displaced=None):

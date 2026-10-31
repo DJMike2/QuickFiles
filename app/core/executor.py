@@ -20,7 +20,6 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class ExecutionResult:
-    total: int = 0
     succeeded: int = 0
     failed: int = 0
     skipped: int = 0
@@ -100,7 +99,7 @@ class Executor:
                 raise
 
     def apply(self, actions):
-        result = ExecutionResult(total=len(actions))
+        result = ExecutionResult()
         if not actions:
             return result
         if self.cancelled():
@@ -117,7 +116,7 @@ class Executor:
             log.warning('Apply preflight failed for %s: %s', self.root, '; '.join(result.errors))
             return result
         actions = report.valid_actions
-        batch_id, _ = self.journal.begin_batch(str(self.root), len(actions))
+        batch_id = self.journal.begin_batch(str(self.root), len(actions))
         result.batch_id = batch_id
         for index, action in enumerate(actions):
             if self.cancelled():
