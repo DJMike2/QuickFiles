@@ -16,6 +16,7 @@ from app.core.identities import COURSE, course_codes, normalized, same_course, s
 from app.core.naming import relative_parts
 from app.core.organization import Profile, ProfileCache, profile_key, scope_compatible, scope_matches
 from app.core.preparation import Preparation
+from app.core.reviewer import Reviewer
 from app.logging_setup import log_stage
 
 log = logging.getLogger(__name__)
@@ -583,7 +584,6 @@ class Planner:
                 if self.destinations[action.category]['existing'] or final_counts[action.category] >= 2]
             for identifier, action in enumerate(self._plan.actions, 1):
                 action.id = str(identifier)
-            from app.core.reviewer import Reviewer
             self.progress_cb('Reviewing the complete preview…')
             with log_stage(log, "Independent review"):
                 Reviewer(self.runtime, self.progress_cb, self.cancelled,

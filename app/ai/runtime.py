@@ -7,6 +7,7 @@ import re
 from app.ai.llm_server import ContextTooLargeError, IncompleteResponseError, LLMServer, LLMServerError
 from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
+from app.ai.evidence import compact, literal_passages
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
 from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
@@ -147,7 +148,6 @@ class AIRuntime(ModelRuntime):
             for key in ('quotes', 'identifiers'):
                 if not isinstance(value.get(key), list) or any(not isinstance(x, str) for x in value[key]):
                     raise ValueError('Invalid summary evidence')
-            from app.ai.evidence import compact
             normalized = compact(sample)
             value['subject'] = compact(value['subject'])
             if len(value['subject']) > 96 or len(value['quotes']) > 3 or len(value['identifiers']) > 6:
@@ -178,7 +178,6 @@ class AIRuntime(ModelRuntime):
             'scope': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'maxLength': 80}},
             'topic': {'type': 'string', 'maxLength': 96},
             'quote': {'type': 'string', 'maxLength': 140}}
-        from app.ai.evidence import literal_passages
         passages = [['', *literal_passages(row['evidence'])] for row in rows]
         local_rows = [{**row, 'id': i, 'support': numbered_quotes(options)}
                       for i, (row, options) in enumerate(zip(rows, passages), 1)]
@@ -263,7 +262,6 @@ class AIRuntime(ModelRuntime):
 
     @reuse_decision(MATCH_PROMPT, lambda decision: bool(decision['folder']))
     def choose_destination(self, file, destinations, status_cb=None, cancelled=None):
-        from app.ai.evidence import compact
         passages = quote_choices(file['evidence'])
         paths = [row['path'] for row in destinations]
         schema = {'type': 'object', 'additionalProperties': False, 'properties': {
@@ -303,7 +301,6 @@ class AIRuntime(ModelRuntime):
 
     @staticmethod
     def _grounded_quote(quote, evidence):
-        from app.ai.evidence import compact
         candidates = [compact(quote)]
         # Decode extra JSON quoting, then require an exact source passage.
         try:
