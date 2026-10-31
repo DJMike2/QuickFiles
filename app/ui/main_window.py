@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip(APP_NAME)
         tray_menu = QMenu(self)
         tray_menu.addAction("Show", self._show_from_tray)
-        tray_menu.addAction("Quit", self._quit_from_tray)
+        tray_menu.addAction("Quit", self.close)
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._tray_activated)
         self.winId()
@@ -374,9 +374,6 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
-    def _quit_from_tray(self):
-        self.close()
-
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._show_from_tray()
@@ -635,7 +632,7 @@ class MainWindow(QMainWindow):
         elif worker.stopped or worker.cancel_event.is_set():
             self.search_panel.set_status("Search stopped.")
         else:
-            self.search_panel.display_results(worker.result)
+            self.search_panel.graph.show_search_results(worker.result)
         worker.deleteLater()
         self._buttons()
         if self._close_pending:

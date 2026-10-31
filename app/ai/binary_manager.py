@@ -48,15 +48,6 @@ class BinaryManager:
     def is_available(self):
         return self.cpu_binary_path.is_file() and os.access(self.cpu_binary_path, os.X_OK)
 
-    @property
-    def has_gpu_build(self):
-        return self.gpu_binary_path is not None
-
-    def _platform_patterns(self, arch):
-        if sys.platform == "win32":
-            return [rf"^llama-{ENGINE_RELEASE}-bin-win-cpu-{arch}\.zip$"]
-        return [rf"^llama-{ENGINE_RELEASE}-bin-ubuntu-{arch}\.tar\.gz$"]
-
     def _install(self, asset, kind, progress_cb, cancelled, status_cb, *, libraries_only=False):
         if cancelled():
             raise InterruptedError("Installation cancelled")
@@ -121,7 +112,6 @@ class BinaryManager:
         cancelled = cancelled or (lambda: False)
         status_cb = status_cb or (lambda message: None)
         arch = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "x64"
-        patterns = self._platform_patterns(arch)
         status_cb(f"Checking llama.cpp {ENGINE_RELEASE}…")
         request = urllib.request.Request(
             f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{ENGINE_RELEASE}",
@@ -134,7 +124,8 @@ class BinaryManager:
             return next((asset for pattern in patterns for asset in assets
                          if re.fullmatch(pattern, asset["name"], re.IGNORECASE)), None)
 
-        cpu_asset = find_asset(patterns)
+        cpu_asset = find_asset([rf"^llama-{ENGINE_RELEASE}-bin-win-cpu-{arch}\.zip$" if sys.platform == "win32"
+                                else rf"^llama-{ENGINE_RELEASE}-bin-ubuntu-{arch}\.tar\.gz$"])
         if cpu_asset is None:
             raise RuntimeError("This engine release has no matching CPU build for this computer")
         self.bin_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +137,7 @@ class BinaryManager:
             self._install(cpu_asset, "cpu", progress_cb, cancelled, status_cb)
         variant = self.hardware.backend
         if variant in {"cuda", "vulkan"}:
-            if upgrade or not self.has_gpu_build:
+            if upgrade or self.gpu_binary_path is None:
                 system = "win" if sys.platform == "win32" else "ubuntu"
                 suffix = r"\.zip" if system == "win" else r"\.tar\.gz"
                 cuda_version = "13.4" if arch == "arm64" else "12.4" if system == "win" else "12.8"

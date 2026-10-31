@@ -307,14 +307,6 @@ class SearchPanel(QWidget):
         self.response.setText("Preparing your search…")
         self.searchRequested.emit(query)
 
-    def display_results(self, payload: dict) -> None:
-        """Render the backend result. Call on Qt's GUI thread after search finishes.
-
-        The graph sorts the `results` array by descending `score`, shows at
-        most 10, and saves the complete JSON for visual search history.
-        """
-        self.graph.show_search_results(payload)
-
     def _update_response(self, payload: dict) -> None:
         total = len(payload.get("results", []))
         self.response.setText(str(payload.get("answer") or f"Found {total} matching files."))
