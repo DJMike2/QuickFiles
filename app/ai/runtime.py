@@ -91,7 +91,7 @@ class AIRuntime(ModelRuntime):
     @property
     def summary_cache_key(self):
         manager = self.model_manager
-        return json.dumps({'model': getattr(manager, 'model_info', {}),
+        return json.dumps({'model': manager.model_info,
                            'settings': manager.runtime_settings, 'prompt': FILE_SUMMARY_PROMPT},
                           sort_keys=True)
 
