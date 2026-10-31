@@ -284,7 +284,7 @@ class Planner:
                 and profile.scope_kind == old['profile'].scope_kind
                 and scope_compatible([old['profile'], profile]))
             if equal_name or equal_scope:
-                if not scope_compatible([old['profile'], profile]):
+                if not equal_scope and not scope_compatible([old['profile'], profile]):
                     raise ValueError('Equivalent destination name has a conflicting scope')
                 old['members'].update(members)
                 return old_path
