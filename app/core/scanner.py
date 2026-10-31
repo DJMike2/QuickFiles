@@ -118,7 +118,7 @@ class Scanner:
                  exclude_patterns=None, progress_cb=None, cancelled=None, threads=0):
         self.root = resolve_safe(root)
         self._root_string = str(self.root)
-        self.content_read_bytes = max(0, min(int(content_read_bytes), 256 * 1024))
+        self.content_read_bytes = content_read_bytes
         self.exclude_patterns = exclude_patterns or []
         self.progress_cb = progress_cb or (lambda n, total, name: None)
         self.cancelled = cancelled or (lambda: False)
