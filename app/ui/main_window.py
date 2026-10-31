@@ -510,8 +510,7 @@ class MainWindow(QMainWindow):
 
         def work(status, progress, cancelled):
             try:
-                activity = getattr(self.ctx, "ai_operation", None)
-                scope = activity(kind, cancelled) if activity and kind in {"scan", "watch"} else nullcontext()
+                scope = self.ctx.ai_operation(kind, cancelled) if kind in {"scan", "watch"} else nullcontext()
                 with scope:
                     return operation(status, progress, cancelled)
             finally:
@@ -606,8 +605,7 @@ class MainWindow(QMainWindow):
         self.search_panel.set_searching(True)
 
         def operation(status, progress, cancelled):
-            activity = getattr(self.ctx, "ai_operation", None)
-            with activity("search", cancelled) if activity else nullcontext():
+            with self.ctx.ai_operation("search", cancelled):
                 return self.ctx.search.search(root, query, status, progress, cancelled)
 
         self.search_worker = Worker(operation, self, operation_name="search")
@@ -619,9 +617,8 @@ class MainWindow(QMainWindow):
 
     def _prepare_search(self, text):
         # Typing takes seconds, about as long as loading the models after they were released.
-        prepare = getattr(self.ctx, "prepare_search", None)
-        if prepare and text.strip() and not (self.worker or self.search_worker):
-            prepare()
+        if text.strip() and not (self.worker or self.search_worker):
+            self.ctx.prepare_search()
 
     def _cancel_search(self):
         if self.search_worker:

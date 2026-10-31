@@ -183,15 +183,11 @@ class FileSearch:
             raise ValueError('Enter a search request of 1–12,000 characters')
         if not self.runtime.available:
             raise LLMServerError('Set up the local AI engine and Qwen model before searching')
-        preload = getattr(self.embeddings, 'prestart', None)
-        if preload:
-            preload(cancelled)
+        self.embeddings.prestart(cancelled)
         # New visual descriptions need the GPU first. When vision is available,
         # decide which GPU model to start during indexing rather than loading both.
         if self.vision is None or not self.vision.available:
-            preload = getattr(self.runtime, 'prestart', None)
-            if preload:
-                preload(cancelled)
+            self.runtime.prestart(cancelled)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         os.close(os.open(self.database_path, os.O_CREAT | os.O_RDWR, 0o600))
         # The index is updated first: describing new photos needs the GPU the search model uses.
@@ -281,9 +277,7 @@ class FileSearch:
                     kind = vision and visual_kind(entry.extension, text)
                     if kind:
                         if not visual:
-                            preload = getattr(vision, 'prestart', None)
-                            if preload:
-                                preload(cancelled)
+                            vision.prestart(cancelled)
                         visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
                         continue
                     pending.append({**row, 'document': self._document(relative, text)})
@@ -337,9 +331,7 @@ class FileSearch:
                         skipped += 1
             index_walked()
             if not visual:
-                preload = getattr(self.runtime, 'prestart', None)
-                if preload:
-                    preload(cancelled)
+                self.runtime.prestart(cancelled)
             flush()
             done = 0
             try:
@@ -362,9 +354,7 @@ class FileSearch:
             reading.shutdown(cancel_futures=True)
             if vision:
                 vision.shutdown()  # Free the GPU for the search model.
-        preload = getattr(self.runtime, 'prestart', None)
-        if preload:
-            preload(cancelled)
+        self.runtime.prestart(cancelled)
         flush()
         check()
         removed = set(cached) - seen
