@@ -106,39 +106,36 @@ class Planner:
                 pending.append((row, key))
         described = {}
         log.info("Subject profiles: ready=%d model_candidates=%d", len(found), len(pending))
-        for offset in range(len(pending)):
+        for number, (row, key) in enumerate(pending, 1):
             self._check_cancelled()
             # One item per semantic judgment: unrelated neighbours and filename
             # order must not change a document's identity or folder purpose.
-            batch = pending[offset:offset+1]
-            row, key = batch[0]
             if key in described:
                 # The production runtime remaps this one item's ID to 1. All
                 # remaining fields, model settings and prompt are in the key.
                 # Revalidate into a separate Profile: later course aliasing is mutable.
                 found[row['id']] = Profile.from_result(deepcopy(described[key]), row['evidence'])
                 continue
-            self.progress_cb(f'Describing subjects and folder purposes… {offset+1}/{len(pending)}')
-            values = self.runtime.profile_items([row for row, key in batch], self.progress_cb, self.cancelled)
-            for (row, key), value in zip(batch, values):
-                self._check_cancelled()
+            self.progress_cb(f'Describing subjects and folder purposes… {number}/{len(pending)}')
+            value = self.runtime.profile_items([row], self.progress_cb, self.cancelled)[0]
+            self._check_cancelled()
+            try:
+                profile = Profile.from_result(value, row['evidence'])
+            except ValueError:
+                retry = self.runtime.profile_items([row], self.progress_cb, self.cancelled)[0]
                 try:
-                    profile = Profile.from_result(value, row['evidence'])
+                    profile = Profile.from_result(retry, row['evidence'])
+                    value = retry
                 except ValueError:
-                    retry = self.runtime.profile_items([row], self.progress_cb, self.cancelled)[0]
-                    try:
-                        profile = Profile.from_result(retry, row['evidence'])
-                        value = retry
-                    except ValueError:
-                        source = compact(row['evidence'])
-                        fallback = {'description': source[:200], 'scope_kind': 'topic', 'scope': [],
-                                    'topic': row.get('subject', '')[:96], 'quote': source[:100]}
-                        profile = Profile.from_result(fallback, row['evidence'])
-                        value = fallback
-                found[row['id']] = profile
-                cache.put_profile(key, value)
-                if profile.scope_kind not in {'unknown', 'mixed'}:
-                    described[key] = value
+                    source = compact(row['evidence'])
+                    fallback = {'description': source[:200], 'scope_kind': 'topic', 'scope': [],
+                                'topic': row.get('subject', '')[:96], 'quote': source[:100]}
+                    profile = Profile.from_result(fallback, row['evidence'])
+                    value = fallback
+            found[row['id']] = profile
+            cache.put_profile(key, value)
+            if profile.scope_kind not in {'unknown', 'mixed'}:
+                described[key] = value
         return found
 
     def _off_limits(self, path):
