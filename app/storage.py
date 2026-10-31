@@ -87,12 +87,10 @@ class Journal:
             return connection.execute(sql, parameters).lastrowid
 
     def begin_batch(self, root, action_count):
-        identifier = str(uuid.uuid4())
-        batch_id = self._write(
+        return self._write(
             "INSERT INTO journal_batch(batch_uuid,root,applied_at,action_count) VALUES(?,?,?,?)",
-            (identifier, root, time.time(), action_count),
+            (str(uuid.uuid4()), root, time.time(), action_count),
         )
-        return batch_id, identifier
 
     def record_op(self, op: JournalOp):
         # Commit before changing the filesystem, rather than at the end of a batch.

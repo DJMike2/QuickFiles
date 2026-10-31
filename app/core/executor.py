@@ -116,7 +116,7 @@ class Executor:
             log.warning('Apply preflight failed for %s: %s', self.root, '; '.join(result.errors))
             return result
         actions = report.valid_actions
-        batch_id, _ = self.journal.begin_batch(str(self.root), len(actions))
+        batch_id = self.journal.begin_batch(str(self.root), len(actions))
         result.batch_id = batch_id
         for index, action in enumerate(actions):
             if self.cancelled():
