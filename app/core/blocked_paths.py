@@ -108,13 +108,6 @@ def _windows_profile_roots() -> list[Path]:
     return roots
 
 
-def is_inside_root(path: Path, root: Path) -> bool:
-    try:
-        return _within(resolve_safe(path), _resolved(root))
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
 def is_blocked(path: Path) -> bool:
     try:
         canonical = resolve_safe(path)
@@ -128,11 +121,6 @@ def is_blocked(path: Path) -> bool:
 def enforce_not_blocked(path: Path):
     if is_blocked(path):
         raise ValueError(f"Protected system location: {path}")
-
-
-def enforce_inside_root(path: Path, root: Path):
-    if not is_inside_root(path, root):
-        raise ValueError(f"Path is outside the selected folder: {path}")
 
 
 def _protected_filename(name: str) -> bool:
@@ -187,7 +175,12 @@ def checked_read_path(root: Path, relative: str) -> Path:
 
 
 def _checked_local_path(root: Path, path: Path) -> Path:
-    enforce_inside_root(path, root)
+    try:
+        inside = _within(resolve_safe(path), _resolved(root))
+    except (OSError, RuntimeError, ValueError):
+        inside = False
+    if not inside:
+        raise ValueError(f"Path is outside the selected folder: {path}")
     enforce_not_blocked(path)
     if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise ValueError(f"Links are not movable: {path}")
