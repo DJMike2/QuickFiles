@@ -25,10 +25,6 @@ _SHELL_NAMES = {"desktop.ini", "thumbs.db", "ehthumbs.db"}
 _WIN_EVERY_DRIVE = {"$recycle.bin", "system volume information", "recovery"}
 
 
-class BlockedPathError(ValueError):
-    pass
-
-
 def enforce_project_boundary(root: Path, path: Path):
     """Recheck the native scanner's markers and special project names before writes."""
     from app.core.scanner import PROJECT_MARKERS
@@ -41,7 +37,7 @@ def enforce_project_boundary(root: Path, path: Path):
             protected = any(child.name.casefold() in markers
                             or child.name.casefold().endswith(('.sln', '.csproj')) for child in parent.iterdir())
         if protected:
-            raise BlockedPathError(f'Application/project folder is protected: {parent.name}')
+            raise ValueError(f'Application/project folder is protected: {parent.name}')
 
 
 def resolve_safe(path: Path) -> Path:
@@ -131,12 +127,12 @@ def is_blocked(path: Path) -> bool:
 
 def enforce_not_blocked(path: Path):
     if is_blocked(path):
-        raise BlockedPathError(f"Protected system location: {path}")
+        raise ValueError(f"Protected system location: {path}")
 
 
 def enforce_inside_root(path: Path, root: Path):
     if not is_inside_root(path, root):
-        raise BlockedPathError(f"Path is outside the selected folder: {path}")
+        raise ValueError(f"Path is outside the selected folder: {path}")
 
 
 def _protected_filename(name: str) -> bool:
@@ -186,7 +182,7 @@ def checked_path(root: Path, relative: str) -> Path:
 def checked_read_path(root: Path, relative: str) -> Path:
     """Read-only searches accept local filenames without portable rename restrictions."""
     if Path(relative).is_absolute() or '..' in Path(relative).parts:
-        raise BlockedPathError('Search path must stay inside the selected folder')
+        raise ValueError('Search path must stay inside the selected folder')
     return _checked_local_path(root, root / relative)
 
 
@@ -194,14 +190,14 @@ def _checked_local_path(root: Path, path: Path) -> Path:
     enforce_inside_root(path, root)
     enforce_not_blocked(path)
     if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
-        raise BlockedPathError(f"Links are not movable: {path}")
+        raise ValueError(f"Links are not movable: {path}")
     if _inside_link(path, _resolved(root)):
-        raise BlockedPathError(f"Path is inside a link: {path}")
+        raise ValueError(f"Path is inside a link: {path}")
     if _protected_filename(path.name):
-        raise BlockedPathError(f"Protected file: {path.name}")
+        raise ValueError(f"Protected file: {path.name}")
     reason = _windows_file_block_reason(path)
     if reason:
-        raise BlockedPathError(reason)
+        raise ValueError(reason)
     return path
 
 

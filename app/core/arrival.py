@@ -1,6 +1,4 @@
 """Remember folders from the last scan so one new file can be compared to them."""
-from __future__ import annotations
-
 import fnmatch
 from pathlib import PurePosixPath
 

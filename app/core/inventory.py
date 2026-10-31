@@ -10,10 +10,7 @@ class FileEntry:
     abs_path: str
     size_bytes: int = 0
     modified_ts: float = 0
-    file_type_bucket: str = "Misc"
     is_conservative: bool = False
-    is_empty: bool = False
-    parent_folder: str = ""
     depth: int = 0
 
 
@@ -26,7 +23,6 @@ class ScanInventory:
     content_read_bytes: int = 1200
     skipped_count: int = 0
     error_count: int = 0
-    scan_duration_s: float = 0
 
     @property
     def total_files(self):

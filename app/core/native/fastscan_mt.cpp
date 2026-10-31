@@ -202,7 +202,7 @@ struct Item {
     unsigned long long size = 0;
     double modified = 0;
 };
-struct Task { Dir dir; std::wstring relative; unsigned depth; };
+struct Task { Dir dir; std::wstring relative; };
 static std::wstring root;
 static std::deque<Task> tasks;
 static std::mutex queue_mutex, output_mutex;
@@ -353,8 +353,8 @@ static void process(const Task& task, std::string& buffer) {
             Dir child = child_dir(task.dir, item.name);
             if (child == invalid_dir) {
                 ++errors;
-                directory_record('P', {invalid_dir, relative, task.depth + 1}, buffer);
-            } else push_task({child, relative, task.depth + 1});
+                directory_record('P', {invalid_dir, relative}, buffer);
+            } else push_task({child, relative});
         } else {
             // LC_NUMERIC stays C; only LC_CTYPE is changed at startup.
             char metadata[128];
@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
         if (directory == invalid_dir) throw std::runtime_error("Cannot open selected folder");
         std::string header = "{\"t\":\"H\",\"protocol\":" + std::to_string(protocol) + ",\"threads\":" + std::to_string(threads) + "}\n";
         write_out(header);
-        push_task({directory, L"", 0});
+        push_task({directory, L""});
         std::vector<std::thread> pool;
         for (unsigned i = 0; i < threads; ++i) pool.emplace_back(worker);
         for (auto& thread : pool) thread.join();

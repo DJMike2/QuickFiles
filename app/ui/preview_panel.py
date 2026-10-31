@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from app.ai.schema import OrganizationPlan, PlanAction
 from app.core.file_kinds import type_label
 from app.core.naming import is_valid_filename
-from app.core.simulator import Simulator
+from app.core.simulator import build_trees
 from app.core.validator import Validator
 
 # state: (label, light colour, dark colour). Struck-through states show where things left.
@@ -147,7 +147,6 @@ class DiffTreeModel(QAbstractItemModel):
         self.editable = editable
         self.rename = None
         self.move_to = None
-        self.dark = False
 
     def set_root(self, root):
         self.beginResetModel()
@@ -197,7 +196,6 @@ class DiffTreeModel(QAbstractItemModel):
         if not index.isValid():
             return Qt.ItemIsDropEnabled if self.editable else Qt.NoItemFlags
         flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-        node = index.internalPointer()
         if self.editable:
             flags |= Qt.ItemIsDropEnabled | Qt.ItemIsDragEnabled | Qt.ItemIsEditable
         return flags
@@ -518,9 +516,7 @@ class PreviewPanel(QWidget):
         self.plan = plan
         self.shortcuts_movable = shortcuts_movable
         self.executables_movable = executables_movable
-        before, after = Simulator(Path(inventory.root)).build_trees(
-            inventory, plan, self._order, self._displaced,
-        )
+        before, after = build_trees(inventory, plan, self._order, self._displaced)
         pending = [before]
         while pending:
             node = pending.pop()
@@ -538,8 +534,7 @@ class PreviewPanel(QWidget):
 
     def set_dark(self, dark):
         self._dark = dark
-        for model, delegate in zip(self.models, self.delegates):
-            model.dark = dark
+        for delegate in self.delegates:
             delegate.dark = dark
         for tree in self.trees:
             tree.viewport().update()
@@ -568,7 +563,7 @@ class PreviewPanel(QWidget):
                 changed = True
         if not changed and not node.is_dir:
             actions.append(PlanAction(str(uuid.uuid4()), "rename", old, new,
-                                      confidence=1, reason="Renamed in preview"))
+                                      reason="Renamed in preview"))
             changed = True
         if not changed:
             return False
@@ -647,7 +642,7 @@ class PreviewPanel(QWidget):
                 changed = True
         if not changed:
             actions.append(PlanAction(str(uuid.uuid4()), "move", source, new_rel,
-                                      confidence=1, reason="Moved in preview"))
+                                      reason="Moved in preview"))
         return actions
 
     def _retarget_folder(self, node, new_rel, actions, displaced):
@@ -666,7 +661,7 @@ class PreviewPanel(QWidget):
             if source in known or dest == source:
                 continue
             actions.append(PlanAction(str(uuid.uuid4()), "move", source, dest,
-                                      confidence=1, reason="Moved in preview"))
+                                      reason="Moved in preview"))
             known.add(source)
         for directory in self.inventory.directories:
             if directory != node.rel_path and not directory.startswith(prefix):
@@ -683,7 +678,7 @@ class PreviewPanel(QWidget):
             exists = Path(self.plan.root).joinpath(*dest_dir.split("/")).is_dir()
             if not covered and not exists:
                 actions.append(PlanAction(str(uuid.uuid4()), "mkdir", directory, dest_dir,
-                                          confidence=1, reason="Moved in preview"))
+                                          reason="Moved in preview"))
         return self._settle_folders(actions, displaced)
 
     def _settle_folders(self, actions, displaced):

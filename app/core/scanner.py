@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fnmatch
-import heapq
 import json
 import logging
 import os
@@ -16,10 +15,7 @@ import tempfile
 import threading
 import time
 
-from app.constants import (
-    CONSERVATIVE_EXTENSIONS, DEFAULT_CONTENT_READ_BYTES, DEFAULT_MAX_FILES,
-    EXT_CATEGORY_MAP,
-)
+from app.constants import CONSERVATIVE_EXTENSIONS, DEFAULT_CONTENT_READ_BYTES
 from app.core.blocked_paths import blocked_roots, resolve_safe, validate_root_selection
 from app.core.inventory import FileEntry, ScanInventory
 from app.core.naming import relative_parts
@@ -36,18 +32,6 @@ log = logging.getLogger(__name__)
 
 def _entry_order(entry):
     return (tuple(entry.rel_path.split("/")[:-1]), entry.filename)
-
-
-class _Candidate:
-    """A reverse-order heap retains only the first max_files deterministic paths."""
-    __slots__ = ("entry", "key")
-
-    def __init__(self, entry):
-        self.entry = entry
-        self.key = _entry_order(entry)
-
-    def __lt__(self, other):
-        return self.key > other.key
 
 
 def scanner_binary() -> Path:
@@ -132,12 +116,10 @@ def _read_output(pipe, chunks, stop):
 
 
 class Scanner:
-    def __init__(self, root: Path, *, max_files=DEFAULT_MAX_FILES,
-                 content_read_bytes=DEFAULT_CONTENT_READ_BYTES, exclude_patterns=None,
-                 progress_cb=None, cancelled=None, threads=0):
+    def __init__(self, root: Path, *, content_read_bytes=DEFAULT_CONTENT_READ_BYTES,
+                 exclude_patterns=None, progress_cb=None, cancelled=None, threads=0):
         self.root = resolve_safe(root)
         self._root_string = str(self.root)
-        self.max_files = max(1, int(max_files))
         self.content_read_bytes = max(0, min(int(content_read_bytes), 256 * 1024))
         self.exclude_patterns = exclude_patterns or []
         self.progress_cb = progress_cb or (lambda n, total, name: None)
@@ -157,10 +139,7 @@ class Scanner:
         if not self.binary_path.is_file():
             raise OSError("Native scanner is missing. Run 'python tools/build_scanner.py' "
                           "or install a build containing the scanner binary.")
-        started = time.monotonic()
         inventory = ScanInventory(root=str(self.root), content_read_bytes=self.content_read_bytes)
-        candidates = [] if self.max_files < DEFAULT_MAX_FILES else None
-        self._seen_files = 0
         # Close the policy before launching to support Windows file sharing.
         with _scratch_dir() as temporary:
             policy = temporary / "policy.bin"
@@ -214,7 +193,7 @@ class Scanner:
                                     inventory.error_count += int(record["errors"])
                                     summary = True
                                 elif kind in {"D", "P", "F"}:
-                                    self._add_record(record, inventory, candidates)
+                                    self._add_record(record, inventory)
                                 else:
                                     raise ValueError("Unknown scanner record")
                             except (KeyError, TypeError, ValueError, UnicodeError) as exc:
@@ -248,17 +227,13 @@ class Scanner:
                             process.wait()
                     reader.join(timeout=2)
                     process.stdout.close()
-        # Native workers finish out of order. Preserve stable planner IDs and caps.
-        if candidates is not None:
-            inventory.entries = [candidate.entry for candidate in candidates]
+        # Native workers finish out of order. Preserve stable planner IDs.
         inventory.entries.sort(key=_entry_order)
-        inventory.skipped_count += self._seen_files - len(inventory.entries)
         inventory.directories.sort()
         inventory.protected_projects.sort()
-        inventory.scan_duration_s = time.monotonic() - started
         return inventory
 
-    def _add_record(self, record, inventory, candidates):
+    def _add_record(self, record, inventory):
         relative = record["p"]
         try:
             parts = relative_parts(relative)
@@ -276,22 +251,12 @@ class Scanner:
         name = parts[-1]
         _, dot, suffix = name.rpartition(".")
         extension = (dot + suffix).lower() if dot else ""
-        size = int(record["sz"])
         entry = FileEntry(
             rel_path=relative, filename=name, extension=extension,
-            abs_path=os.path.join(self._root_string, *parts), size_bytes=size,
-            modified_ts=float(record["mt"]), file_type_bucket=EXT_CATEGORY_MAP.get(extension, "Misc"),
-            is_conservative=extension in CONSERVATIVE_EXTENSIONS, is_empty=size == 0,
-            parent_folder=parts[-2] if len(parts) > 1 else "", depth=len(parts) - 1,
+            abs_path=os.path.join(self._root_string, *parts), size_bytes=int(record["sz"]),
+            modified_ts=float(record["mt"]), is_conservative=extension in CONSERVATIVE_EXTENSIONS,
+            depth=len(parts) - 1,
         )
-        self._seen_files += 1
-        if candidates is None:
-            inventory.entries.append(entry)
-        else:
-            candidate = _Candidate(entry)
-            if len(candidates) < self.max_files:
-                heapq.heappush(candidates, candidate)
-            elif candidate.key < candidates[0].key:
-                heapq.heapreplace(candidates, candidate)
-        if self._seen_files % 100 == 0:
-            self.progress_cb(min(self._seen_files, self.max_files), 0, name)
+        inventory.entries.append(entry)
+        if len(inventory.entries) % 100 == 0:
+            self.progress_cb(len(inventory.entries), 0, name)

@@ -4,33 +4,29 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 from pathlib import Path
 from typing import Any, Callable
 
-log = logging.getLogger(__name__)
-
 from PySide6.QtCore import (
-    QEasingCurve, QPointF, QRectF, Qt, QLineF, Signal, QUrl, QVariantAnimation,
+    QEasingCurve, QPointF, QRectF, Qt, QLineF, Signal, QVariantAnimation,
 )
 from PySide6.QtGui import (
-    QBrush, QColor, QDesktopServices, QFont, QFontMetrics, QPainter, QPen,
+    QBrush, QColor, QFont, QFontMetrics, QPainter, QPen,
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
     QFrame, QGraphicsItem, QGraphicsLineItem, QGraphicsObject, QGraphicsScene,
-    QGraphicsSceneMouseEvent, QGraphicsView, QHBoxLayout, QLabel, QMessageBox,
+    QGraphicsSceneMouseEvent, QGraphicsView, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget,
 )
 
 
 class _Connection(QGraphicsLineItem):
-    def __init__(self, first: "_Node", second: "_Node", related: bool = False):
+    def __init__(self, first: "_Node", second: "_Node"):
         super().__init__()
         self.first = first
         self.second = second
-        self.related = related
         self.setZValue(-1)
         self.set_highlighted(False)
         first.connections.append(self)
@@ -38,12 +34,7 @@ class _Connection(QGraphicsLineItem):
         self.refresh()
 
     def set_highlighted(self, hovered: bool) -> None:
-        color = QColor("#9fdaff" if hovered else
-                       ("#38bdf8" if self.related else "#3a597a"))
-        pen = QPen(color, 3 if hovered else (1.5 if self.related else 2))
-        if self.related:
-            pen.setStyle(Qt.PenStyle.DashLine)
-        self.setPen(pen)
+        self.setPen(QPen(QColor("#9fdaff" if hovered else "#3a597a"), 3 if hovered else 2))
 
     def refresh(self) -> None:
         self.setLine(QLineF(self.first.pos(), self.second.pos()))
@@ -281,19 +272,15 @@ class _GraphCanvas(QGraphicsView):
 
 
 class SearchGraphWidget(QWidget):
-    # Disable open_files_on_click when the parent handles file opening.
-
     file_clicked = Signal(str)
     search_selected = Signal(str)
     results_displayed = Signal(object)
     history_view_changed = Signal(bool)
     file_hovered = Signal(object)  # Dict on hover; None when the graph resets.
 
-    def __init__(self, parent: QWidget | None = None, *, max_results: int = 10,
-                 open_files_on_click: bool = True):
+    def __init__(self, parent: QWidget | None = None, *, max_results: int = 10):
         super().__init__(parent)
         self.max_results = max(1, max_results)
-        self.open_files_on_click = open_files_on_click
         self._history: list[dict[str, Any]] = []
         self._current_index: int | None = None
         self._showing_history = False
@@ -415,10 +402,8 @@ class SearchGraphWidget(QWidget):
         self._active_animation = fade_out
         fade_out.start()
 
-    def show_search_results(self, data: dict[str, Any] | str | bytes) -> None:
+    def show_search_results(self, data: dict[str, Any]) -> None:
         # New searches add history; showing an older entry does not.
-        if isinstance(data, (str, bytes)):
-            data = json.loads(data)
         if not isinstance(data, dict):
             raise ValueError("Search results must be a JSON object")
         if not isinstance(data.get("results", []), list):
@@ -456,25 +441,6 @@ class SearchGraphWidget(QWidget):
         else:
             self._draw(payload)
             notify()
-
-    def save_history(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self._history, indent=2), encoding="utf-8")
-
-    def load_history(self, path: str | Path) -> None:
-        entries = json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(entries, list) or not all(
-            isinstance(x, dict) and isinstance(x.get("results", []), list) for x in entries
-        ):
-            raise ValueError("Invalid search history file")
-        self._cancel_transition()
-        self.file_hovered.emit(None)
-        self._history = entries
-        self._current_index = len(entries) - 1 if entries else None
-        self._showing_history = False
-        displayed = entries[-1] if entries else {"query": "Your search", "results": []}
-        self._draw(displayed)
-        self.results_displayed.emit(displayed)
-        self.history_view_changed.emit(False)
 
     def show_history_graph(self) -> None:
         if self._transitioning or self._showing_history:
@@ -523,19 +489,6 @@ class SearchGraphWidget(QWidget):
                 lambda: self._draw({"query": "Your search", "results": []}),
                 lambda: self.history_view_changed.emit(False),
             )
-
-    def _open_result(self, path: str) -> None:
-        self.file_clicked.emit(path)
-        if not self.open_files_on_click:
-            return
-        if not path or not Path(path).is_file():
-            log.warning('Cannot open graph result; file is unavailable: %s', path)
-            QMessageBox.warning(self, "File not found",
-                                "This file no longer exists at the indexed location:\n" + path)
-            return
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve()))):
-            log.warning('Desktop service could not open file: %s', path)
-            QMessageBox.warning(self, "Could not open file", "Could not open:\n" + path)
 
     @staticmethod
     def _type_color(file_type: str) -> str:
@@ -600,7 +553,7 @@ class SearchGraphWidget(QWidget):
             file_type = str(item.get("type") or Path(filename).suffix.lstrip(".") or "FILE")
             # We still rank by score, but don't show any numerical match rating.
             node = _Node(filename, file_type.upper(), "file",
-                         lambda p=path: self._open_result(p),
+                         lambda p=path: self.file_clicked.emit(p),
                          self._type_color(file_type),
                          # Keep the most recently hovered file visible in the
                          # right panel after the cursor leaves the circle.

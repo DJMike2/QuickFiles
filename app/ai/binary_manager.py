@@ -128,8 +128,6 @@ class BinaryManager:
         cancelled = cancelled or (lambda: False)
         status_cb = status_cb or (lambda message: None)
         patterns = self._platform_patterns()
-        if self.hardware.os_warning:
-            raise RuntimeError(self.hardware.os_warning)
         status_cb(f"Checking llama.cpp {ENGINE_RELEASE}…")
         request = urllib.request.Request(
             f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{ENGINE_RELEASE}",

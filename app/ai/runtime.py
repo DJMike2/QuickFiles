@@ -8,8 +8,7 @@ from app.ai.llm_server import ContextTooLargeError, IncompleteResponseError, LLM
 from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
-from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, FOLDER_PLAN_PROMPT,
-                            LEFTOVER_FOLDERS_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
+from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
                             MATCH_PROMPT, REVIEW_PROMPT)
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
@@ -168,42 +167,6 @@ class AIRuntime(ModelRuntime):
             return value, sample, ''
         except (TypeError, ValueError, KeyError) as exc:
             return None, sample, str(exc)
-
-    def plan_folders(self, files, existing_folders, protected_projects, already_planned, *,
-                     leftovers=False, status_cb=None, cancelled=None):
-        schema = {'type': 'object', 'additionalProperties': False, 'properties': {'folders': {
-            'type': 'array', 'maxItems': 6 if leftovers else 18,
-            'items': {'type': 'object', 'additionalProperties': False,
-                      'properties': {'path': {'type': 'string', 'maxLength': 64},
-                                     'holds': {'type': 'string', 'maxLength': 96}},
-                      'required': ['path', 'holds']}}}, 'required': ['folders']}
-        rows = [{'id': row['id'], 'name': row['name'], 'hint': row['hint']} for row in files]
-        while True:
-            user = json.dumps({'existing_folders': existing_folders,
-                               'protected_projects': protected_projects,
-                               'already_planned': already_planned, 'loose_files': rows},
-                              ensure_ascii=False, separators=(',', ':'))
-            try:
-                raw = self._generate(LEFTOVER_FOLDERS_PROMPT if leftovers else FOLDER_PLAN_PROMPT,
-                                     user, status_cb, cancelled, schema=schema)
-                break
-            except ContextTooLargeError:
-                if len(rows) <= 1:
-                    raise LLMServerError("Too much folder context. Choose a smaller folder to organize.")
-                # Large directories still receive one shared plan, based on a bounded sample.
-                rows = rows[::2]
-                if status_cb:
-                    status_cb("Using a sample of filenames to plan this large folder…")
-        try:
-            folders = json.loads(raw)['folders']
-            if not isinstance(folders, list) or any(
-                not isinstance(item, dict) or not isinstance(item.get('path'), str)
-                or not isinstance(item.get('holds'), str) for item in folders
-            ):
-                raise ValueError("Invalid folder entries")
-            return folders
-        except (ValueError, TypeError, KeyError) as exc:
-            raise LLMServerError("The local model returned an invalid folder plan") from exc
 
     def profile_items(self, rows, status_cb=None, cancelled=None):
         """Small batches retain every file; context overflow splits instead of sampling away files."""

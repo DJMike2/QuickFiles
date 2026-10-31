@@ -69,22 +69,21 @@ QFrame QLabel#responseBubble {{ background: {bubble}; color: {bubble_text}; bord
 
 
 class SearchPanel(QWidget):
-    """A single-turn chat sidebar, graph, and optional development controls."""
+    """A single-turn chat sidebar and graph."""
 
     searchRequested = Signal(str)
     cancelRequested = Signal()
 
-    def __init__(self, parent=None, *, show_json_loader: bool = True):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self._busy = False
         self._external_busy = False
-        self.show_json_loader = show_json_loader
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(5, 5, 5, 5)
         outer.setSpacing(6)
 
-        self.graph = SearchGraphWidget(open_files_on_click=False)
+        self.graph = SearchGraphWidget()
         self.graph.file_clicked.connect(self._open_file)
         self.graph.search_selected.connect(self._restore_query)
         self.graph.results_displayed.connect(self._update_response)
@@ -100,7 +99,7 @@ class SearchPanel(QWidget):
         right_column.setSpacing(6)
         outer.addWidget(right)
 
-        # The search folder lives in the main toolbar; standalone panels keep it here.
+        # The main window places the search folder bar in its toolbar.
         self._build_scope_bar()
 
         right_column.addWidget(self._build_metadata_panel())
@@ -198,8 +197,7 @@ class SearchPanel(QWidget):
         tip.setStyleSheet("font-size:11px;")
         side.addWidget(tip)
 
-        # The latest prompt/answer and temporary organizer controls scroll as
-        # needed; the JSON and Send buttons are always kept below them.
+        # The latest prompt/answer scroll as needed; the Send button is always kept below them.
         chat_scroll = QScrollArea()
         chat_scroll.setFrameShape(QFrame.Shape.NoFrame)
         chat_scroll.setWidgetResizable(True)
@@ -227,7 +225,6 @@ class SearchPanel(QWidget):
         chat_scroll.setWidget(chat_content)
         side.addWidget(chat_scroll, 1)
 
-        # The footer has its own spacing, so Load JSON and Send cannot overlap.
         footer = QWidget(sidebar)
         footer.setObjectName("searchFooter")
         footer.setStyleSheet("QWidget#searchFooter {background: transparent;}")
@@ -235,15 +232,6 @@ class SearchPanel(QWidget):
         footer_layout = QVBoxLayout(footer)
         footer_layout.setContentsMargins(0, 5, 0, 0)
         footer_layout.setSpacing(8)
-
-        # This is deliberately the only testing control. In the full app,
-        # MainWindow passes show_json_loader=False so users never see it.
-        if self.show_json_loader:
-            footer_layout.addWidget(self.scope_bar)
-            self.json_button = QPushButton("Load JSON…")
-            self.json_button.clicked.connect(self._load_json)
-            self.json_button.setMinimumHeight(34)
-            footer_layout.addWidget(self.json_button)
 
         input_row = QHBoxLayout()
         input_row.setSpacing(7)
@@ -305,8 +293,6 @@ class SearchPanel(QWidget):
         enabled = not self._busy and not self._external_busy
         for control in (self.query, self.search_button, self.folder, self.browse_button):
             control.setEnabled(enabled)
-        if hasattr(self, 'json_button'):
-            self.json_button.setEnabled(enabled)
 
     def set_status(self, message):
         self.response.setText(message)
@@ -322,8 +308,8 @@ class SearchPanel(QWidget):
         self.response.setText("Preparing your search…")
         self.searchRequested.emit(query)
 
-    def display_results(self, payload: dict | str | bytes) -> None:
-        """Render backend JSON. Call on Qt's GUI thread after search finishes.
+    def display_results(self, payload: dict) -> None:
+        """Render the backend result. Call on Qt's GUI thread after search finishes.
 
         The graph sorts the `results` array by descending `score`, shows at
         most 10, and saves the complete JSON for visual search history.
@@ -341,32 +327,29 @@ class SearchPanel(QWidget):
 
     @staticmethod
     def _format_file_size(value) -> str:
-        """Human-readable size for indexed JSON metadata or disk stat bytes."""
+        """Human-readable size from a search result or disk stat bytes."""
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-            return str(value) if value not in (None, "") else "—"
+            return "—"
         amount = float(value)
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if amount < 1024 or unit == "TB":
                 return f"{amount:.0f} B" if unit == "B" else f"{amount:.1f} {unit}"
             amount /= 1024
-        return "—"
 
     @staticmethod
     def _format_modified(value) -> str:
-        """Accept an ISO date string or a Unix timestamp from search JSON."""
+        """A Unix timestamp from a search result or disk stat."""
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             try:
                 return datetime.fromtimestamp(value).strftime("%b %d, %Y · %I:%M %p")
             except (OverflowError, OSError, ValueError):
                 return "—"
-        return str(value) if value not in (None, "") else "—"
+        return "—"
 
     def _update_file_preview(self, record: object) -> None:
         """Show the hovered result; never ask the AI to create a summary.
 
         For files on this computer, read only basic filesystem metadata.
-        For test JSON containing nonexistent paths, use optional JSON fields
-        (size_bytes, modified, metadata) when supplied and show placeholders.
         """
         if not isinstance(record, dict):
             self.meta_file_name.setText("No file selected")
@@ -380,14 +363,8 @@ class SearchPanel(QWidget):
         path = str(record.get("path") or "")
         name = str(record.get("name") or (Path(path).name if path else "Unnamed file"))
         file_type = str(record.get("type") or Path(name).suffix.lstrip(".") or "File")
-        extra = record.get("metadata")
-        indexed = extra if isinstance(extra, dict) else {}
-        raw_size = record.get("size_bytes", record.get(
-            "size", indexed.get("size_bytes", indexed.get("size"))))
-        raw_modified = record.get("modified", record.get(
-            "last_modified", indexed.get("modified", indexed.get("last_modified"))))
-        if raw_modified is None:
-            raw_modified = record.get("modified_at", indexed.get("modified_at"))
+        raw_size = record.get("size_bytes")
+        raw_modified = record.get("modified")
 
         # Checking stat does not open or read file contents or load a model.
         available = False
@@ -409,7 +386,7 @@ class SearchPanel(QWidget):
         self.meta_location.setText("Location: " + (path or "—"))
         self.meta_availability.setText(
             "Click its circle to open it." if available
-            else "File not accessible here (sample or moved file)."
+            else "File not accessible here (moved or deleted)."
         )
 
     def _restore_query(self, query: str) -> None:
@@ -424,21 +401,7 @@ class SearchPanel(QWidget):
                 "Click the center node to return."
             )
 
-    def _load_json(self) -> None:
-        # Standalone UI testing: exercise the real JSON integration path.
-        # No local model, downloads, embeddings, or fake search are invoked.
-        path, _ = QFileDialog.getOpenFileName(self, "Load search JSON", "", "JSON files (*.json)")
-        if not path:
-            return
-        try:
-            self.display_results(Path(path).read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError) as exc:
-            QMessageBox.warning(self, "Invalid JSON results", str(exc))
-
     def _open_file(self, path: str) -> None:
-        if path.startswith("demo://"):
-            self.response.setText("This is a demo node, not a real file.")
-            return
         target = Path(path)
         if not target.is_file():
             log.warning('Cannot open search result; file is unavailable: %s', path)
