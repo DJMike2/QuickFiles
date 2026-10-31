@@ -85,7 +85,6 @@ class SearchPanel(QWidget):
 
         self.graph = SearchGraphWidget()
         self.graph.file_clicked.connect(self._open_file)
-        self.graph.search_selected.connect(self._restore_query)
         self.graph.results_displayed.connect(self._update_response)
         self.graph.history_view_changed.connect(self._history_view_changed)
         self.graph.file_hovered.connect(self._update_file_preview)
@@ -388,9 +387,6 @@ class SearchPanel(QWidget):
             "Click its circle to open it." if available
             else "File not accessible here (moved or deleted)."
         )
-
-    def _restore_query(self, query: str) -> None:
-        self.query.setText(query)
 
     def _history_view_changed(self, showing_history: bool) -> None:
         if showing_history:

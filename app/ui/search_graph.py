@@ -273,7 +273,6 @@ class _GraphCanvas(QGraphicsView):
 
 class SearchGraphWidget(QWidget):
     file_clicked = Signal(str)
-    search_selected = Signal(str)
     results_displayed = Signal(object)
     history_view_changed = Signal(bool)
     file_hovered = Signal(object)  # Dict on hover; None when the graph resets.
@@ -432,7 +431,6 @@ class SearchGraphWidget(QWidget):
 
         def notify() -> None:
             self.results_displayed.emit(payload)
-            self.search_selected.emit(str(payload.get("query", "")))
             self.history_view_changed.emit(False)
 
         # Animate when returning from history; otherwise render immediately.
