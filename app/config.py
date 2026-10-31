@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 from app.constants import APP_DATA_DIR_NAME, DEFAULT_CONTENT_READ_BYTES
-from app.platforms import require_supported_platform
 
 DEFAULTS = {
     "theme": "light",
@@ -25,7 +24,6 @@ DEFAULTS = {
 
 
 def app_data_path() -> Path:
-    require_supported_platform()
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming"))
     else:

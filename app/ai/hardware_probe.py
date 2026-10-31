@@ -11,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from app.platforms import MIN_CUDA_GLIBC, external_environment, glibc_version, require_supported_platform
+from app.platforms import MIN_CUDA_GLIBC, external_environment, glibc_version
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +59,6 @@ def _ram_gb():
 
 
 def probe():
-    require_supported_platform()
     hardware = HardwareProfile(platform.processor() or platform.machine(), os.cpu_count() or 1, _ram_gb())
     if sys.platform == "win32":
         raw = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
