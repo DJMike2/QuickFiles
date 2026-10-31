@@ -9,14 +9,12 @@ from app.ai.runtime import AIRuntime
 from app.ai.embeddings import EmbeddingRuntime
 from app.ai.vision import VisionRuntime
 from app.core.search import FileSearch
-from app.logging_setup import setup_logging
 from app.storage import Journal
 
 
 class AppContext:
     def __init__(self, config):
         self.config = config
-        setup_logging(config.app_data_dir / "logs")
         self.hardware = probe()
         self.model_manager = ModelManager(config.models_dir)
         self.binary_manager = BinaryManager(config.app_data_dir, self.hardware)
