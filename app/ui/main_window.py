@@ -651,7 +651,6 @@ class MainWindow(QMainWindow):
             self.close()
             return
         self._invalidate()
-        self._buttons()
 
     def _settings(self):
         keys = ("allowed_root", "shortcuts_movable", "executables_movable", "exclude_patterns")
