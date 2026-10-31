@@ -69,16 +69,15 @@ def _pdf_text(path, pages=1, *, cancelled=None):
                     break
                 except subprocess.TimeoutExpired:
                     pass
-            result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         finally:
             if process.poll() is None:
                 process.kill()
             process.communicate()
-        if result.returncode:
-            log.warning('PDF reader failed for %s (exit %s): %s', path, result.returncode,
-                        result.stderr[:2048].decode('utf-8', 'replace').strip())
+        if process.returncode:
+            log.warning('PDF reader failed for %s (exit %s): %s', path, process.returncode,
+                        stderr[:2048].decode('utf-8', 'replace').strip())
         else:
-            text = result.stdout[:12000 * pages].decode("utf-8", "replace")
+            text = stdout[:12000 * pages].decode("utf-8", "replace")
             if text.strip():
                 return text
     # Keep normal extraction unchanged; PDFium recovers encrypted or unsupported PDFs.
