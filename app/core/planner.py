@@ -39,6 +39,7 @@ class Planner:
         self.destinations = {}
         self.decisions = {}
         self.course_aliases = {}
+        self._existing_directories = set()
 
     def _canonicalize_courses(self, profiles, evidence_rows):
         counts = Counter(normalized(code).upper() for p in profiles.values()
@@ -144,7 +145,7 @@ class Planner:
 
     def _new_levels(self, parts):
         """Existing parent structure is reused, not charged as newly created depth."""
-        directories = getattr(self, '_existing_directories', set())
+        directories = self._existing_directories
         for length in range(len(parts), -1, -1):
             if length == 0 or '/'.join(parts[:length]) in directories:
                 return len(parts) - length
@@ -172,7 +173,7 @@ class Planner:
         path = '/'.join(parts)
         if self._off_limits(path):
             self._destination_parts(path)
-        directories = getattr(self, '_existing_directories', set())
+        directories = self._existing_directories
         anchor = max((i for i in range(len(parts)+1)
                       if i == 0 or '/'.join(parts[:i]) in directories))
         if len(parts)-anchor > 2:
@@ -270,7 +271,7 @@ class Planner:
     def _add_destination(self, path, profile, members, families, *, existing=False, source=''):
         parts = self._destination_parts(path, existing=existing)
         path = '/'.join(parts)
-        if (not existing and path in getattr(self, '_existing_directories', set())
+        if (not existing and path in self._existing_directories
                 and path not in self.destinations):
             raise ValueError('Existing parent containers are not file destinations')
         if any(path.casefold() == value or path.casefold().startswith(value + '/') for value in self._file_paths):
