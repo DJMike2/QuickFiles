@@ -23,14 +23,10 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class FileSummary:
-    rel_path: str
     basis: str
-    read_status: str
     summary: str
     subject: str
     identifiers: list[str]
-    quotes: list[str]
-    limitation: str
 
 
 @dataclass
@@ -61,10 +57,8 @@ class SummaryCache:
         if row:
             try:
                 value = FileSummary(**json.loads(row[0]))
-                if all(isinstance(getattr(value, name), str) for name in
-                       ("rel_path", "basis", "read_status", "summary", "subject", "limitation")) and all(
-                           isinstance(items, list) and all(isinstance(item, str) for item in items)
-                           for items in (value.identifiers, value.quotes)):
+                if all(isinstance(getattr(value, name), str) for name in ("basis", "summary", "subject")) and (
+                        isinstance(value.identifiers, list) and all(isinstance(item, str) for item in value.identifiers)):
                     return value
             except (ValueError, TypeError):
                 pass
@@ -98,23 +92,18 @@ class Preparation:
             # to the profile/matching/review stages. Never hold readable
             # content merely because a model failed to copy a substring.
             header_identity = literal_header_identity(evidence.text)
-            excerpts = literal_excerpts(evidence.text)
-            summary = FileSummary(entry.rel_path, basis, evidence.status, ' … '.join(excerpts),
-                header_identity or evidence.text[:96], [header_identity] if header_identity else [], excerpts,
-                evidence.limitation + '; literal excerpts, not an inferred subject')
+            summary = FileSummary(basis, ' … '.join(literal_excerpts(evidence.text)),
+                header_identity or evidence.text[:96], [header_identity] if header_identity else [])
         elif basis in {'filename', 'archive_listing'} and (label := KIND_LABELS.get(kind_of(entry))):
             # The extension already proves a broad format category. Asking a
             # model to restate it adds no evidence about unread contents.
-            summary = FileSummary(entry.rel_path, basis, evidence.status,
+            summary = FileSummary(basis,
                 (f'Filename: {entry.filename}; kind from extension: {label}'
-                 + ('; '+source[:600] if basis == 'archive_listing' else '')), label, [],
-                [entry.filename], evidence.limitation)
+                 + ('; '+source[:600] if basis == 'archive_listing' else '')), label, [])
         else:
             value = self.runtime.summarize_file(source, basis=basis, status_cb=self.progress,
                                                 cancelled=self.cancelled)
-            summary = FileSummary(entry.rel_path, basis, evidence.status, value["summary"],
-                                  value["subject"], value["identifiers"], value["quotes"],
-                                  evidence.limitation)
+            summary = FileSummary(basis, value["summary"], value["subject"], value["identifiers"])
         return summary
 
     def prepare(self, inventory):
@@ -188,9 +177,7 @@ class Preparation:
                         summary = self._summarize(entry, evidence, basis, source)
                     except SummaryGroundingError:
                         result.held[entry.rel_path] = "AI summary failed evidence checks; leave in place"
-                        result.summaries[entry.rel_path] = FileSummary(
-                            entry.rel_path, basis, evidence.status,
-                            "Subject could not be verified", "", [], [], evidence.limitation)
+                        result.summaries[entry.rel_path] = FileSummary(basis, "Subject could not be verified", "", [])
                         continue
                     self.cache.put(key, summary)
                 self._check()
