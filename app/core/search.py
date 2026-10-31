@@ -506,7 +506,8 @@ class FileSearch:
         candidates = self._filtered(rows, request)
         # Keywords alone still name a subject ("python scripts" -> code files about python).
         topic = request['query'].strip() or ' '.join(request.get('keywords', []))
-        metadata_only = not topic and bool(self._describe(request))
+        filters = self._describe(request)
+        metadata_only = not topic and bool(filters)
         if not topic and not metadata_only:
             topic = original  # The model found neither a topic nor a filter; search the words as typed.
         ranked = []
@@ -549,7 +550,6 @@ class FileSearch:
         results = [{'id': row['path'], 'name': path.name, 'path': str(path), 'type': path.suffix.lstrip('.'),
                     'score': score, 'size_bytes': row['size'], 'modified': row['mtime_ns'] / 1e9}
                    for score, row, path in shown]
-        filters = self._describe(request)
         # After a review only the files it kept count; unreviewed filter results report every match.
         count = len(results) if reviewed else matched
         if count:
