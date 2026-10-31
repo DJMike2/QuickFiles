@@ -8,7 +8,7 @@ import re
 
 from app.ai.evidence import compact, extract_evidence
 from app.ai.llm_server import LLMServerError
-from app.ai.schema import OrganizationPlan, PlanAction, PlanWarning
+from app.ai.schema import OrganizationPlan, PlanAction
 from app.core.blocked_paths import checked_path
 from app.core.file_kinds import folder_kind, kind_of, KIND_LABELS
 from app.core.file_state import identity
@@ -571,10 +571,10 @@ class Planner:
                     if identity(source.stat()) != fingerprints[row['rel_path']]:
                         raise ValueError('File changed while its destination was being planned')
                 except (OSError, ValueError) as exc:
-                    self._plan.warnings.append(PlanWarning('', f'Kept {row["rel_path"]}: {exc}'))
+                    self._plan.warnings.append(f'Kept {row["rel_path"]}: {exc}')
                     self.decisions[row['rel_path']]['folder'] = ''
                     continue
-                self._plan.actions.append(PlanAction(str(len(self._plan.actions)+1), 'move', row['rel_path'],
+                self._plan.actions.append(PlanAction('move', row['rel_path'],
                     path + '/' + row['name'], category=path,
                     reason=decision['reason'] + '\nEvidence: ' + decision['evidence'],
                     source_identity=fingerprints[row['rel_path']]))
@@ -582,8 +582,6 @@ class Planner:
             final_counts = Counter(action.category for action in self._plan.actions)
             self._plan.actions = [action for action in self._plan.actions
                 if self.destinations[action.category]['existing'] or final_counts[action.category] >= 2]
-            for identifier, action in enumerate(self._plan.actions, 1):
-                action.id = str(identifier)
             self.progress_cb('Reviewing the complete preview…')
             with log_stage(log, "Independent review"):
                 Reviewer(self.runtime, self.progress_cb, self.cancelled,

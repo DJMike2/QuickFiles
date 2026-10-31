@@ -7,7 +7,6 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from app.ai.schema import PlanWarning
 from app.constants import (
     EXECUTABLE_EXTENSIONS, LIBRARY_EXTENSIONS, LIVE_DATA_EXTENSIONS, SHORTCUT_EXTENSIONS,
 )
@@ -64,8 +63,8 @@ class Validator:
             raise ValueError("The plan belongs to a different folder")
         report = ValidationReport(warnings=list(plan.warnings))
         project_warning = self._project_warning()
-        if project_warning and all(item.message != project_warning for item in report.warnings):
-            report.warnings.insert(0, PlanWarning("", project_warning))
+        if project_warning and project_warning not in report.warnings:
+            report.warnings.insert(0, project_warning)
         sources = set()
         destinations = {}
 
@@ -135,5 +134,5 @@ class Validator:
                     sources.add(key(action.src_rel))
             except (OSError, RuntimeError, ValueError) as exc:
                 report.rejected_actions.append((original, str(exc)))
-                report.warnings.append(PlanWarning(original.id, f"Rejected: {exc}"))
+                report.warnings.append(f"Rejected: {exc}")
         return report

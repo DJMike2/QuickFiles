@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 import re
 
-from app.ai.schema import PlanWarning
 from app.core.blocked_paths import checked_path
 from app.core.file_state import identity
 from app.core.organization import scope_compatible, scope_matches
@@ -111,9 +110,7 @@ class Reviewer:
         for source, reason in held.items():
             log.debug('Left %r unchanged after review: %s', source, reason)
             if source in safety_holds:
-                plan.warnings.append(PlanWarning('', f'Kept {source}: {safety_holds[source]}'))
-        for number, action in enumerate(plan.actions, 1):
-            action.id = str(number)
+                plan.warnings.append(f'Kept {source}: {safety_holds[source]}')
         self._check()
         plan.review = {'proposed': proposed, 'retained': len(plan.actions), 'held': held, 'decisions': audit}
         return plan

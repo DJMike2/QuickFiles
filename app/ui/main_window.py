@@ -357,7 +357,7 @@ class MainWindow(QMainWindow):
                     if not folder or cancelled():
                         continue
                     action = PlanAction(
-                        str(row["id"]), "move", row["name"], f"{folder}/{row['name']}",
+                        "move", row["name"], f"{folder}/{row['name']}",
                         category=folder, reason="Local AI matched the file to this folder",
                         source_identity=row['source_identity'],
                     )
@@ -571,8 +571,7 @@ class MainWindow(QMainWindow):
                 f"{self.plan.excluded_count:,} unchanged · {self.inventory.skipped_count:,} skipped · "
                 f"{self.inventory.error_count:,} scan errors"
             )
-            warnings = [warning.message for warning in self.plan.warnings]
-            self._show_banner("\n".join(warnings[:5]))
+            self._show_banner("\n".join(self.plan.warnings[:5]))
             self._learn_scan()
         else:
             result = worker.result
