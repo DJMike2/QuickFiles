@@ -503,11 +503,6 @@ class PreviewPanel(QWidget):
         self.details.addWidget(row)
 
     def set_plan(self, inventory, plan, shortcuts_movable=False, executables_movable=False):
-        if any(a.type != 'mkdir' and a.source_identity is None for a in plan.actions):
-            # Sample/imported previews need the same stale-file protection as AI plans.
-            report = Validator(Path(plan.root), allow_suffix_on_collision=False,
-                shortcuts_movable=shortcuts_movable, executables_movable=executables_movable).validate_plan(plan)
-            plan.actions, plan.warnings = report.valid_actions, report.warnings
         if inventory is not self.inventory:
             self._order = None
             self._displaced = set()
