@@ -20,7 +20,6 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class ExecutionResult:
-    total: int = 0
     succeeded: int = 0
     failed: int = 0
     skipped: int = 0
@@ -100,7 +99,7 @@ class Executor:
                 raise
 
     def apply(self, actions):
-        result = ExecutionResult(total=len(actions))
+        result = ExecutionResult()
         if not actions:
             return result
         if self.cancelled():
