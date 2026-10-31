@@ -6,6 +6,7 @@ import json
 import re
 
 from app.ai.evidence import compact
+from app.ai.prompts import CATALOG_PROMPT
 from app.core.identities import (COURSE, NOT_COURSES, course_codes, explicit_clients,
                                  literal_header_identity, normalized, same_course, same_scope)
 from app.core.preparation import SummaryCache
@@ -141,7 +142,6 @@ class ProfileCache(SummaryCache):
 
 
 def profile_key(runtime, row):
-    from app.ai.prompts import CATALOG_PROMPT
     return hashlib.sha256(json.dumps(['independent-profile-v3-proof', CATALOG_PROMPT, runtime.summary_cache_key, row],
                                      sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
