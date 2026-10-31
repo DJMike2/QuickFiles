@@ -14,8 +14,7 @@
   },
   "search": {
     "temperature": 0,
-    "max_tokens": 384,
-    "excerpt_chars": 2000
+    "max_tokens": 384
   },
   "model": {
     "label": "Qwen3.5-4B Q6_K",
