@@ -579,7 +579,7 @@ class MainWindow(QMainWindow):
             result = worker.result
             self._invalidate()
             if kind == "apply":
-                self.status.setText(f"{result.verified:,} applied and verified · {result.failed:,} failed · {result.skipped:,} skipped")
+                self.status.setText(f"{result.succeeded:,} applied and verified · {result.failed:,} failed · {result.skipped:,} skipped")
             else:
                 self.status.setText(f"{result.reversed_ok:,} undone · {result.skipped:,} skipped")
             self._show_banner("\n".join(result.errors[:5]))

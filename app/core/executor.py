@@ -25,7 +25,6 @@ class ExecutionResult:
     failed: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
-    verified: int = 0
     batch_id: int | None = None
 
 
@@ -165,7 +164,6 @@ class Executor:
                     raise OSError('Destination verification failed; consult the journal before retrying')
                 self.journal.mark_op_success(op_id)
                 result.succeeded += 1
-                result.verified += 1
             except InterruptedError:
                 result.skipped += len(actions) - index
                 break
