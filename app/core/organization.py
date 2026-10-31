@@ -64,8 +64,7 @@ class Profile:
         profile = cls(value['description'], value['scope_kind'], value['scope'], value['topic'], value['quote'])
         if profile.scope_kind == 'unknown':
             return profile
-        if not (client_field or profile.scope_kind == 'client'
-                or any(normalized(first_line) == normalized(c) for c in clients)):
+        if not (owned_client or profile.scope_kind == 'client'):
             client, clients = '', []
         if not codes and not owned_client and profile.scope_kind == 'course':
             for scope in profile.scope:

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from app.platforms import MIN_CUDA_GLIBC, external_environment, glibc_version, require_supported_platform
+from app.platforms import MIN_CUDA_GLIBC, external_environment, glibc_version
 
 log = logging.getLogger(__name__)
 
@@ -59,18 +59,17 @@ def _ram_gb():
 
 
 def probe():
-    require_supported_platform()
     hardware = HardwareProfile(platform.processor() or platform.machine(), os.cpu_count() or 1, _ram_gb())
+    raw = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+    if raw:
+        try:
+            name, memory = raw.splitlines()[0].rsplit(",", 1)
+            hardware.gpu_name = name.strip()
+            hardware.vram_gb = float(memory) / 1024
+            hardware.backend = "cuda"
+        except ValueError:
+            pass
     if sys.platform == "win32":
-        raw = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
-        if raw:
-            try:
-                name, memory = raw.splitlines()[0].rsplit(",", 1)
-                hardware.gpu_name = name.strip()
-                hardware.vram_gb = float(memory) / 1024
-                hardware.backend = "cuda"
-            except ValueError:
-                pass
         if hardware.backend == "cpu":
             raw = _run(["powershell", "-NoProfile", "-Command",
                         "Get-CimInstance Win32_VideoController | Select-Object Name | ConvertTo-Json -Compress"])
@@ -92,18 +91,8 @@ def probe():
                             hardware.backend = "vulkan"
             except (ValueError, TypeError, AttributeError):
                 pass
-    else:
-        raw = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
-        if raw:
-            try:
-                name, memory = raw.splitlines()[0].rsplit(",", 1)
-                hardware.gpu_name = name.strip()
-                hardware.vram_gb = float(memory) / 1024
-                hardware.backend = "cuda"
-            except ValueError:
-                pass
-        if hardware.backend == "cuda" and glibc_version() < MIN_CUDA_GLIBC:
-            # The pinned CUDA engine needs newer system libraries than the CPU engine.
-            hardware.backend = "cpu"
-            log.info("Using CPU AI: the Linux CUDA engine requires glibc 2.38 or newer.")
+    elif hardware.backend == "cuda" and glibc_version() < MIN_CUDA_GLIBC:
+        # The pinned CUDA engine needs newer system libraries than the CPU engine.
+        hardware.backend = "cpu"
+        log.info("Using CPU AI: the Linux CUDA engine requires glibc 2.38 or newer.")
     return hardware

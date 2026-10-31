@@ -19,7 +19,6 @@ from app.constants import CONSERVATIVE_EXTENSIONS, DEFAULT_CONTENT_READ_BYTES
 from app.core.blocked_paths import blocked_roots, resolve_safe, validate_root_selection
 from app.core.inventory import FileEntry, ScanInventory
 from app.core.naming import relative_parts
-from app.platforms import require_supported_platform
 
 PROJECT_MARKERS = {".git", "package.json", "manifest.json", "pyproject.toml", "requirements.txt",
                    "Cargo.toml", "go.mod", "CMakeLists.txt", "node_modules", ".venv", "venv", "setup.py",
@@ -36,7 +35,6 @@ def _entry_order(entry):
 
 def scanner_binary() -> Path:
     """Resolve independently of cwd; packaged apps must include core/native/bin."""
-    require_supported_platform()
     return NATIVE_DIR / "bin" / ("fastscan.exe" if sys.platform == "win32" else "fastscan")
 
 

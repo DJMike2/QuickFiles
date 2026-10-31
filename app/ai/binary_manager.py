@@ -15,7 +15,6 @@ import zipfile
 from pathlib import Path
 
 from app.ai.model_downloader import download_file
-from app.platforms import require_supported_platform
 
 log = logging.getLogger(__name__)
 ENGINE_RELEASE = "b11869"
@@ -23,7 +22,6 @@ ENGINE_RELEASE = "b11869"
 
 class BinaryManager:
     def __init__(self, app_data_dir, hardware):
-        require_supported_platform()
         self.bin_dir = app_data_dir / "bin"
         self.hardware = hardware
         self.server_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
@@ -54,15 +52,10 @@ class BinaryManager:
     def has_gpu_build(self):
         return self.gpu_binary_path is not None
 
-    def _platform_patterns(self):
-        require_supported_platform()
-        arm = platform.machine().lower() in {"arm64", "aarch64"}
-        arch = "arm64" if arm else "x64"
+    def _platform_patterns(self, arch):
         if sys.platform == "win32":
             return [rf"^llama-{ENGINE_RELEASE}-bin-win-cpu-{arch}\.zip$"]
-        if sys.platform.startswith("linux"):
-            return [rf"^llama-{ENGINE_RELEASE}-bin-ubuntu-{arch}\.tar\.gz$"]
-        raise RuntimeError("No automatic AI engine package is available for this operating system")
+        return [rf"^llama-{ENGINE_RELEASE}-bin-ubuntu-{arch}\.tar\.gz$"]
 
     def _install(self, asset, kind, progress_cb, cancelled, status_cb, *, libraries_only=False):
         if cancelled():
@@ -127,7 +120,8 @@ class BinaryManager:
     def download(self, progress_cb=None, cancelled=None, status_cb=None):
         cancelled = cancelled or (lambda: False)
         status_cb = status_cb or (lambda message: None)
-        patterns = self._platform_patterns()
+        arch = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "x64"
+        patterns = self._platform_patterns(arch)
         status_cb(f"Checking llama.cpp {ENGINE_RELEASE}…")
         request = urllib.request.Request(
             f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{ENGINE_RELEASE}",
@@ -150,14 +144,12 @@ class BinaryManager:
         upgrade = installed_release != ENGINE_RELEASE
         if upgrade or not self.is_available:
             self._install(cpu_asset, "cpu", progress_cb, cancelled, status_cb)
-        arm = platform.machine().lower() in {"arm64", "aarch64"}
-        arch = "arm64" if arm else "x64"
         variant = self.hardware.backend
-        if sys.platform in {"win32", "linux"} and variant in {"cuda", "vulkan"}:
+        if variant in {"cuda", "vulkan"}:
             if upgrade or not self.has_gpu_build:
                 system = "win" if sys.platform == "win32" else "ubuntu"
                 suffix = r"\.zip" if system == "win" else r"\.tar\.gz"
-                cuda_version = "13.4" if arm else "12.4" if system == "win" else "12.8"
+                cuda_version = "13.4" if arch == "arm64" else "12.4" if system == "win" else "12.8"
                 tag = f"cuda-{cuda_version}" if variant == "cuda" else "vulkan"
                 gpu = find_asset([rf"^llama-{ENGINE_RELEASE}-bin-{system}-{re.escape(tag)}-{arch}{suffix}$"])
                 if gpu:

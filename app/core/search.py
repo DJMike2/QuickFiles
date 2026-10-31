@@ -183,15 +183,11 @@ class FileSearch:
             raise ValueError('Enter a search request of 1–12,000 characters')
         if not self.runtime.available:
             raise LLMServerError('Set up the local AI engine and Qwen model before searching')
-        preload = getattr(self.embeddings, 'prestart', None)
-        if preload:
-            preload(cancelled)
+        self.embeddings.prestart(cancelled)
         # New visual descriptions need the GPU first. When vision is available,
         # decide which GPU model to start during indexing rather than loading both.
         if self.vision is None or not self.vision.available:
-            preload = getattr(self.runtime, 'prestart', None)
-            if preload:
-                preload(cancelled)
+            self.runtime.prestart(cancelled)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         os.close(os.open(self.database_path, os.O_CREAT | os.O_RDWR, 0o600))
         # The index is updated first: describing new photos needs the GPU the search model uses.
@@ -281,9 +277,7 @@ class FileSearch:
                     kind = vision and visual_kind(entry.extension, text)
                     if kind:
                         if not visual:
-                            preload = getattr(vision, 'prestart', None)
-                            if preload:
-                                preload(cancelled)
+                            vision.prestart(cancelled)
                         visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
                         continue
                     pending.append({**row, 'document': self._document(relative, text)})
@@ -337,9 +331,7 @@ class FileSearch:
                         skipped += 1
             index_walked()
             if not visual:
-                preload = getattr(self.runtime, 'prestart', None)
-                if preload:
-                    preload(cancelled)
+                self.runtime.prestart(cancelled)
             flush()
             done = 0
             try:
@@ -362,9 +354,7 @@ class FileSearch:
             reading.shutdown(cancel_futures=True)
             if vision:
                 vision.shutdown()  # Free the GPU for the search model.
-        preload = getattr(self.runtime, 'prestart', None)
-        if preload:
-            preload(cancelled)
+        self.runtime.prestart(cancelled)
         flush()
         check()
         removed = set(cached) - seen
@@ -506,7 +496,8 @@ class FileSearch:
         candidates = self._filtered(rows, request)
         # Keywords alone still name a subject ("python scripts" -> code files about python).
         topic = request['query'].strip() or ' '.join(request.get('keywords', []))
-        metadata_only = not topic and bool(self._describe(request))
+        filters = self._describe(request)
+        metadata_only = not topic and bool(filters)
         if not topic and not metadata_only:
             topic = original  # The model found neither a topic nor a filter; search the words as typed.
         ranked = []
@@ -549,7 +540,6 @@ class FileSearch:
         results = [{'id': row['path'], 'name': path.name, 'path': str(path), 'type': path.suffix.lstrip('.'),
                     'score': score, 'size_bytes': row['size'], 'modified': row['mtime_ns'] / 1e9}
                    for score, row, path in shown]
-        filters = self._describe(request)
         # After a review only the files it kept count; unreviewed filter results report every match.
         count = len(results) if reviewed else matched
         if count:

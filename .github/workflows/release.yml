@@ -257,7 +257,6 @@ jobs:
           import json
           import os
           from pathlib import Path
-          import re
           import subprocess
           import sys
           from types import SimpleNamespace
@@ -265,13 +264,14 @@ jobs:
           sys.path.insert(0, str(Path.cwd()))
           from app.ai.binary_manager import BinaryManager, ENGINE_RELEASE
 
-          manager = BinaryManager(Path("build/engine-check"), SimpleNamespace(backend="cpu", os_warning=""))
+          manager = BinaryManager(Path("build/engine-check"), SimpleNamespace(backend="cpu"))
           metadata = subprocess.check_output([
               "gh", "api", f"repos/ggml-org/llama.cpp/releases/tags/{ENGINE_RELEASE}"
           ])
-          assets = json.loads(metadata)["assets"]
-          asset = next(asset for asset in assets
-                       if any(re.fullmatch(pattern, asset["name"]) for pattern in manager._platform_patterns()))
+          # The CPU build the app installs on x64 Windows and Linux runners.
+          name = (f"llama-{ENGINE_RELEASE}-bin-win-cpu-x64.zip" if sys.platform == "win32"
+                  else f"llama-{ENGINE_RELEASE}-bin-ubuntu-x64.tar.gz")
+          asset = next(asset for asset in json.loads(metadata)["assets"] if asset["name"] == name)
           manager.bin_dir.mkdir(parents=True, exist_ok=True)
           manager._install(asset, "cpu", None, lambda: False, lambda message: None)
           binary = manager.cpu_binary_path
