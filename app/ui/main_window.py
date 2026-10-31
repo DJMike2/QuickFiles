@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
                     entry = FileEntry(
                         path.name, path.name, extension, str(path), size_bytes=stat.st_size,
                         modified_ts=stat.st_mtime,
-                        is_conservative=extension in CONSERVATIVE_EXTENSIONS, depth=0,
+                        is_conservative=extension in CONSERVATIVE_EXTENSIONS,
                     )
                     files.append({
                         "id": index, "name": path.name, "rel_path": path.name,
@@ -429,10 +429,8 @@ class MainWindow(QMainWindow):
         root = root.resolve()
         self.path.setText(str(root))
         self.config.set("allowed_root", str(root))
-        options = {
-            "content_read_bytes": self.config.get("content_read_bytes"),
-            "exclude_patterns": list(self.config.get("exclude_patterns")),
-        }
+        read_bytes = self.config.get("content_read_bytes")
+        excludes = list(self.config.get("exclude_patterns"))
         shortcuts = self.config.get("shortcuts_movable")
         executables = self.config.get("executables_movable")
         self._invalidate()
@@ -442,8 +440,8 @@ class MainWindow(QMainWindow):
             log.info("Scan location: %s", root)
             status("Scanning folder…")
             with log_stage(log, "Inventory"):
-                inventory = Scanner(root, **options, cancelled=cancelled,
-                                    progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
+                inventory = Scanner(root, content_read_bytes=read_bytes, exclude_patterns=excludes,
+                                    cancelled=cancelled, progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
             log.info("Inventory: files=%d folders=%d protected=%d skipped=%d errors=%d",
                      inventory.total_files, len(inventory.directories), len(inventory.protected_projects),
                      inventory.skipped_count, inventory.error_count)
@@ -549,13 +547,13 @@ class MainWindow(QMainWindow):
         elif worker.stopped or (kind == "scan" and worker.cancel_event.is_set()):
             self.status.setText("Stopped. No new plan was applied.")
         elif kind == "watch":
-            for name, folder in worker.result or []:
-                self._index.add(folder, name)
-                self._tray.showMessage(APP_NAME, f"{name} move to {folder}",
-                                       QSystemTrayIcon.MessageIcon.Information, 5000)
             moved = worker.result or []
+            for name, folder in moved:
+                self._index.add(folder, name)
+                self._tray.showMessage(APP_NAME, f"{name} moved to {folder}",
+                                       QSystemTrayIcon.MessageIcon.Information, 5000)
             self.status.setText(
-                f"{moved[-1][0]} move to {moved[-1][1]}" if moved else "New file left in place."
+                f"{moved[-1][0]} moved to {moved[-1][1]}" if moved else "New file left in place."
             )
         elif kind == "scan":
             self.inventory, self.plan = worker.result

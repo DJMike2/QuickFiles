@@ -148,11 +148,11 @@ class Preparation:
             try:
                 path = checked_path(root, entry.rel_path)
                 before = path.stat()
-                if before.st_mode & 0o111 and not stat.S_ISDIR(before.st_mode) and not self.executables_movable:
-                    # Also protect extensionless ELF files and executable scripts on Linux.
-                    if sys.platform != "win32":
-                        result.held[entry.rel_path] = "Executable permission requires explicit opt-in"
-                        continue
+                # Also protect extensionless ELF files and executable scripts on Linux.
+                if (sys.platform != "win32" and before.st_mode & 0o111 and not stat.S_ISDIR(before.st_mode)
+                        and not self.executables_movable):
+                    result.held[entry.rel_path] = "Executable permission requires explicit opt-in"
+                    continue
                 if not path.is_file() or before.st_size == 0:
                     result.held[entry.rel_path] = "Empty stub or nonregular file"
                     continue
