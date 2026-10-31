@@ -45,7 +45,7 @@ def resolve_safe(path: Path) -> Path:
     return path.expanduser().resolve()
 
 
-# Resolving every protected root again for every file dominated search indexing. Results are
+# Resolving every protected root again for every file dominated bulk checks. Results are
 # kept briefly per root path, so a changed environment or a new link is noticed within seconds.
 _RESOLVED: dict[Path, tuple[float, Path]] = {}
 _RESOLVE_SECONDS = 2.
@@ -172,6 +172,27 @@ def checked_read_path(root: Path, relative: str) -> Path:
     if Path(relative).is_absolute() or '..' in Path(relative).parts:
         raise ValueError('Search path must stay inside the selected folder')
     return _checked_local_path(root, root / relative)
+
+
+def walk_read_check(root: Path):
+    """checked_read_path for a top-down walk of a validated, resolved root that enters only the
+    folders this accepts. Those are real folders inside the root, so an entry resolves to itself
+    unless it is a link, and only protected locations inside the root can contain it. Returns
+    allowed(relative, path) for the entry's path below the root and its full path."""
+    fold = str.casefold if sys.platform == "win32" else str
+    # Protected locations inside the root, as relative folder prefixes.
+    prefixes = [fold("/".join(path.parts[len(root.parts):])) + "/"
+                for path in map(_resolved, blocked_roots()) if _within(path, root)]
+    if sys.platform == "win32" and len(root.parts) == 1:
+        prefixes += [name + "/" for name in _WIN_EVERY_DRIVE]
+
+    def allowed(relative: str, path: str) -> bool:
+        if os.path.islink(path) or (hasattr(os.path, "isjunction") and os.path.isjunction(path)):
+            return False
+        if any((fold(relative) + "/").startswith(prefix) for prefix in prefixes):
+            return False
+        return not (_protected_filename(relative.rpartition("/")[2]) or _windows_file_block_reason(Path(path)))
+    return allowed
 
 
 def _checked_local_path(root: Path, path: Path) -> Path:
