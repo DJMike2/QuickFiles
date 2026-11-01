@@ -15,9 +15,6 @@ class ModelRuntime:
     def _new_server(self):
         raise NotImplementedError
 
-    def _before_start(self):
-        pass
-
     def _load_async(self, status_cb=None, cancelled=None):
         cancelled = cancelled or (lambda: False)
         if cancelled():
@@ -44,7 +41,6 @@ class ModelRuntime:
                 try:
                     if stop.is_set() or cancelled():
                         raise InterruptedError('Model loading stopped')
-                    self._before_start()
                     server.start(status_cb, lambda: stop.is_set() or cancelled())
                     if stop.is_set() or cancelled():
                         raise InterruptedError('Model loading stopped')

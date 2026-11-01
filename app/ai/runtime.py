@@ -1,4 +1,4 @@
-"""One local model server for grounded planning, independent review and semantic search."""
+"""One local model server for organization, search and image descriptions."""
 from datetime import date
 import json
 import logging
@@ -15,6 +15,7 @@ from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, SEARCH_QUERY_PRO
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
 
 SEARCH_SORTS = ['relevance', 'newest', 'oldest', 'largest', 'smallest']
+PARALLEL_VRAM_GB = 7.5
 log = logging.getLogger(__name__)
 
 
@@ -51,7 +52,14 @@ class AIRuntime(ModelRuntime):
     def _new_server(self):
         self._organizer_decisions.clear()
         return LLMServer(self.binary_manager, self.model_manager.model_path,
-                         self.model_manager.runtime_settings)
+                         {**self.model_manager.runtime_settings, 'parallel': self.slots},
+                         mmproj=self.model_manager.mmproj_path)
+
+    @property
+    def slots(self):
+        if self.binary_manager.hardware.vram_gb < PARALLEL_VRAM_GB:
+            return 1
+        return self.model_manager.runtime_settings['parallel']
 
     def shutdown(self):
         try:

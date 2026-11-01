@@ -1,75 +1,49 @@
-"""Describe photos, videos and scanned pages with the local vision model, once per file."""
+"""Describe photos, videos and scanned pages through the shared local model."""
 import hashlib
 import json
-import logging
 import re
 
 from app.ai import media
-from app.ai.llm_server import LLMServer, LLMServerError
-from app.ai.model_runtime import ModelRuntime
 from app.ai.prompts import VISION_PROMPTS
 
-log = logging.getLogger(__name__)
 # Short descriptions keep indexing fast; scans get more room for their key words.
 MAX_TOKENS = {'image': 90, 'video': 90, 'scan': 120}
 LABELS = {'image': 'Image', 'video': 'Video', 'scan': 'Scanned page'}
-# Files described at once. Batching keeps the GPU busy: about 40% faster on an 8 GB laptop GPU with
-# the same search accuracy, but each slot needs room for its own image and description.
-SLOTS = 4
-SLOTS_VRAM_GB = 7.5
-SLOT_CONTEXT = 4096
 
 
-class VisionRuntime(ModelRuntime):
-    def __init__(self, binary_manager, model_manager, runtime):
-        super().__init__()
-        self.binary_manager = binary_manager
-        self.model_manager = model_manager
-        # The text model shares the GPU; it is unloaded while images are described.
+class VisionDescriptions:
+    def __init__(self, runtime):
         self.runtime = runtime
 
     @property
     def slots(self):
-        return SLOTS if self.binary_manager.hardware.vram_gb >= SLOTS_VRAM_GB else 1
-
-    def _new_server(self):
-        manager = self.model_manager
-        return LLMServer(self.binary_manager, manager.vision_model_path,
-                         {**manager.runtime_settings, 'context_tokens': SLOT_CONTEXT * self.slots,
-                          'parallel': self.slots},
-                         mmproj=manager.vision_mmproj_path)
-
-    def _before_start(self):
-        # Finish/cancel a pending text load before reserving the GPU for vision.
-        self.runtime.shutdown()
-
-    def prestart(self, cancelled=None):
-        if self.available:
-            return self._load_async(cancelled=cancelled)
+        return self.runtime.slots
 
     @property
     def available(self):
-        return self.binary_manager.is_available and self.model_manager.vision_downloaded
+        return self.runtime.available
 
     @property
     def fingerprint(self):
-        """Changes with the model or the prompts, so stored descriptions are rewritten once."""
-        source = json.dumps([self.model_manager.vision_model_info['sha256'], VISION_PROMPTS, MAX_TOKENS], sort_keys=True)
+        manager = self.runtime.model_manager
+        source = json.dumps([manager.model_info['sha256'], manager.model_info['mmproj']['sha256'],
+                             manager.runtime_settings['image_max_tokens'], VISION_PROMPTS, MAX_TOKENS,
+                             media.IMAGE_SIDE, media.SCAN_SIDE, media.VIDEO_FRAMES], sort_keys=True)
         return hashlib.sha256(source.encode()).hexdigest()[:16]
 
     def describe(self, path, kind, status_cb=None, cancelled=None):
         """One line about what the file shows, labelled by kind, or "" when it cannot be decoded."""
+        if cancelled and cancelled():
+            raise InterruptedError('Search stopped')
         frame = media.FRAMES[kind](path)
         if frame is None:
             return ''
         if cancelled and cancelled():
             raise InterruptedError('Search stopped')
-        try:
-            server = self._ensure_started(status_cb, cancelled)
-            raw = server.chat(VISION_PROMPTS[kind], 'Describe it.', MAX_TOKENS[kind], 0,
-                                    images=[frame], allow_truncated=True)
-        except (LLMServerError, InterruptedError):
-            self.shutdown()
-            raise
+        server = self.runtime._ensure_started(status_cb, cancelled)
+        raw = server.chat(VISION_PROMPTS[kind], 'Describe it.', MAX_TOKENS[kind], 0,
+                          images=[frame], allow_truncated=True)
+        if cancelled and cancelled():
+            raise InterruptedError('Search stopped')
         text = re.sub(r'\s+', ' ', raw).strip()
         return f'{LABELS[kind]}: {text}' if text else ''

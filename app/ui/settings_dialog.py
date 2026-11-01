@@ -97,15 +97,6 @@ class SettingsDialog(QDialog):
         model_row.addWidget(self.model_status)
         model_row.addStretch()
         column.addWidget(model_group)
-        vision_group = QGroupBox("Vision Model")
-        self.vision_row = QHBoxLayout(vision_group)
-        vision_name = QLabel(f"<b>{manager.vision_model_info['label']}</b>")
-        vision_name.setTextFormat(Qt.RichText)
-        self.vision_row.addWidget(vision_name)
-        self.vision_status = QLabel()
-        self.vision_row.addWidget(self.vision_status)
-        self.vision_row.addStretch()
-        column.addWidget(vision_group)
         engine_group = QGroupBox("AI Engine (llama-server)")
         engine_row = QHBoxLayout(engine_group)
         self.engine_status = QLabel()
@@ -116,7 +107,7 @@ class SettingsDialog(QDialog):
         self.install.clicked.connect(self._setup)
         engine_row.addWidget(self.install)
         column.addWidget(engine_group)
-        column.addWidget(_note("A local AI engine and model are required to organize and search files."))
+        column.addWidget(_note("One local AI model organizes files and describes images for search."))
         column.addStretch()
         return page
 
@@ -199,13 +190,10 @@ class SettingsDialog(QDialog):
         manager = self.ctx.model_manager
         installed = manager.is_downloaded
         self.model_status.setText(f"✅  {manager.disk_usage_mb:.0f} MB installed" if installed else "⬜  Not installed")
-        vision = manager.vision_downloaded
-        self.vision_status.setText(f"✅  {manager.vision_disk_usage_mb:.0f} MB installed" if vision
-                                   else "⬜  Not installed")
         engine = self.ctx.binary_manager.is_available
         self.engine_status.setText("✅  Installed" if engine else "⬜  Not installed")
-        self.install.setVisible(not (engine and installed and vision))
-        self.storage.setText(f"Model storage: {manager.disk_usage_mb + manager.vision_disk_usage_mb:.0f} MB")
+        self.install.setVisible(not (engine and installed))
+        self.storage.setText(f"Model storage: {manager.disk_usage_mb:.0f} MB")
 
     def _setup(self):
         FirstRunDialog(self.ctx, self).exec()

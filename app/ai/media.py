@@ -1,4 +1,4 @@
-"""One small JPEG per photo, video or scanned page, for the vision model to describe.
+"""One small JPEG per photo, video or scanned page, for the shared model to describe.
 
 Every function returns None when the file cannot be decoded (corrupt, unsupported codec, or the
 optional imaging libraries are missing), so indexing never fails because of one bad file.
