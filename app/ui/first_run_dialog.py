@@ -19,8 +19,7 @@ class FirstRunDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 20)
         hardware = context.hardware
         model = context.model_manager.model_info
-        vision = context.model_manager.vision_model_info
-        total_gb = (model["size_bytes"] + vision["size_bytes"] + vision["mmproj"]["size_bytes"]) / 1e9
+        total_gb = (model["size_bytes"] + model["mmproj"]["size_bytes"]) / 1e9
         title = QLabel("Set up local AI")
         font = title.font()
         font.setPointSize(17)
@@ -30,7 +29,7 @@ class FirstRunDialog(QDialog):
         info = QLabel(
             f"{hardware.cpu_name} · {hardware.cpu_cores} CPU cores · {hardware.ram_gb:.1f} GB RAM\n"
             f"GPU: {hardware.gpu_name or 'none detected'} ({hardware.backend.upper()})\n\n"
-            f"Install llama.cpp, {model['label']} and the {vision['label']} vision model "
+            f"Install llama.cpp and {model['label']} with text and image support "
             f"(about {total_gb:.1f} GB).\n"
             "The local AI engine and model are required to organize files."
         )
@@ -56,11 +55,11 @@ class FirstRunDialog(QDialog):
         buttons.addWidget(self.install)
         layout.addLayout(buttons)
         if self._installed():
-            self.status.setText("The local AI engine and models are installed.")
+            self.status.setText("The local AI engine and model are installed.")
             self.install.setText("Close")
 
     def _installed(self):
-        return self.ctx.runtime.available and self.ctx.model_manager.vision_downloaded
+        return self.ctx.runtime.available
 
     def _install(self):
         if self._installed():
@@ -73,16 +72,12 @@ class FirstRunDialog(QDialog):
 
         def operation(status, progress, cancelled):
             if not self.ctx.binary_manager.is_available:
-                status("Step 1/3: Installing the AI engine…")
+                status("Step 1/2: Installing the AI engine…")
                 self.ctx.binary_manager.download(progress, cancelled, status)
             if cancelled():
                 raise InterruptedError("Installation cancelled")
-            status("Step 2/3: Installing the AI model…")
+            status("Step 2/2: Installing the AI model with image support…")
             self.ctx.model_manager.download(progress, cancelled)
-            if cancelled():
-                raise InterruptedError("Installation cancelled")
-            status("Step 3/3: Installing the vision model…")
-            self.ctx.model_manager.download_vision(progress, cancelled)
 
         self.worker = Worker(operation, self)
         self.worker.status.connect(self.status.setText)

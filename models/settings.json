@@ -10,7 +10,9 @@
     "seed": 42,
     "batch_size": 20,
     "threads": 4,
-    "speculative": "draft-mtp"
+    "speculative": "draft-mtp",
+    "parallel": 4,
+    "image_max_tokens": 1024
   },
   "search": {
     "temperature": 0,
@@ -23,19 +25,12 @@
     "size_mb": 3805,
     "size_bytes": 3805358048,
     "sha256": "5a5bc7a3f9375b395e9f81fb69109038cf160c84606b8192f13cbb8355ca59f2",
-    "min_ram_gb": 8
-  },
-  "vision_model": {
-    "label": "Qwen3-VL-4B-Instruct Q4_K_S",
-    "filename": "Qwen3-VL-4B-Instruct-Q4_K_S.gguf",
-    "url": "https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF/resolve/00c00da0690c4b14b5539b02c4ea5d7c9102b35e/Qwen3-VL-4B-Instruct-Q4_K_S.gguf",
-    "size_bytes": 2383311136,
-    "sha256": "a17d6971beb52ce90968118e2c909957d43e83e3befd8d0894f4ae597c15b743",
+    "min_ram_gb": 8,
     "mmproj": {
-      "filename": "Qwen3-VL-4B-Instruct-mmproj-F16.gguf",
-      "url": "https://huggingface.co/unsloth/Qwen3-VL-4B-Instruct-GGUF/resolve/00c00da0690c4b14b5539b02c4ea5d7c9102b35e/mmproj-F16.gguf",
-      "size_bytes": 836180640,
-      "sha256": "1b9f4e92f0fbda14d7d7b58baed86039b8a980fe503d9d6a9393f25c0028f1fc"
+      "filename": "mmproj-Qwen_Qwen3.5-4B-f16.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/4168f45a16a1290d65a4ec0fa312ae917a4c15d6/mmproj-Qwen_Qwen3.5-4B-f16.gguf",
+      "size_bytes": 672423488,
+      "sha256": "659b59dd44b73b1cd34af6cc424669484b06dc80f4340adf8ea84ad776eef813"
     }
   },
   "embedding_model": {

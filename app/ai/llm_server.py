@@ -47,7 +47,7 @@ class LLMServer:
         self.model_path = model_path
         self.settings = settings
         self.embedding = embedding
-        self.mmproj = mmproj  # A vision model's image projector; enables image input.
+        self.mmproj = mmproj
         self._process = None
         self._output = None
         self._interrupted = threading.Event()
@@ -132,8 +132,12 @@ class LLMServer:
             command += ["--embedding", "--pooling", self.settings["pooling"], "--parallel", "1",
                         "--batch-size", "2048", "--ubatch-size", "2048"]
         if self.mmproj:
-            command += ["--mmproj", str(self.mmproj), "--parallel", "1"]
-        elif not self.embedding and self.settings.get("speculative"):
+            # Slots share one context pool; a lone text request can still use the full budget.
+            command += ["--mmproj", str(self.mmproj), "--parallel", str(self.settings["parallel"]),
+                        "--kv-unified", "--kv-unified-per-slot", str(self.settings["context_tokens"]),
+                        "--image-max-tokens", str(self.settings["image_max_tokens"]),
+                        "--cache-ram", "0", "--no-cache-idle-slots"]
+        if not self.embedding and self.settings.get("speculative"):
             # The model's own multi-token-prediction layers draft tokens that are then verified.
             command += ["--spec-type", self.settings["speculative"]]
         return command

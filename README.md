@@ -21,7 +21,7 @@ Windows 10/11 & Ubuntu 22.04+ · Local AI · Native C++ Scanner
 | **Organize** | Group loose files by related subjects, using readable contents before filenames. |
 | **Preview** | Compare Before/After trees, rename items, drag files, or move them into a new folder. |
 | **Search** | Describe what you need; browse matching files in an interactive graph. |
-| **Visual search** | Search images, video frames, and scanned PDFs when the optional vision model is installed. |
+| **Visual search** | Search images, video frames, and scanned PDFs using the same local AI model. |
 | **Undo** | Restore the most recent batch, preserving files that have since changed or would conflict. |
 
 ## Get started
@@ -70,7 +70,7 @@ python -m app.main
 
 </details>
 
-On first launch, choose **Setup AI** to download the local engine and **Qwen3.5-4B Q6_K** model (about 3.81 GB). CUDA acceleration is optional; a CPU engine is available if GPU startup fails. AI setup is required for organization.
+On first launch, choose **Setup AI** to download the local engine and **Qwen3.5-4B Q6_K** with its image projector (about 4.48 GB total). One model handles text and images. CUDA acceleration is optional; a CPU engine is available if GPU startup fails. AI setup is required for organization.
 
 QuickFiles supplies its own light/dark themes. Desktops such as XFCE can run without
 the optional desktop Settings portal; its absence is recorded in the app log.
@@ -96,7 +96,7 @@ Models load when you scan or search, stay ready for follow-up work, and unload a
 
 Open **AI Search**, select a folder, and describe the files you want. Search supports file-type, size, and date filters and never moves files.
 
-The first search downloads a small embedding model (about 46 MB). With the optional vision model, it can also describe images, sample video frames, and read the first page of scanned PDFs. Descriptions are cached; audio contents are not inspected.
+The first search downloads a small embedding model (about 46 MB). The shared Qwen model also describes images, samples video frames, and reads the first page of scanned PDFs. Descriptions are cached; audio contents are not inspected.
 
 ## Development
 

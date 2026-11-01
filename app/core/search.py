@@ -119,7 +119,7 @@ def identifiers(terms):
 
 
 def visual_kind(extension, text=''):
-    """'image', 'video' or 'scan' for files only a vision model can read, otherwise None."""
+    # Select image input for media without readable text.
     if extension in SEARCH_KINDS['image']:
         return 'image'
     if extension in SEARCH_KINDS['video']:
@@ -150,7 +150,7 @@ class FileSearch:
         return f'{self.embeddings.fingerprint}:{INDEX_FORMAT}'
 
     def _described(self, vision):
-        """Stamp for rows the vision model described, so they are described once per model."""
+        # Refresh descriptions when the shared model, projector or image prompts change.
         return f'{self.encoder}+vision:{vision.fingerprint}'
 
     def _reusable(self, old, extension, vision, described):
@@ -160,9 +160,9 @@ class FileSearch:
                 return False
             encoder = encoder.removesuffix(PDF_TEXT_VERSION)
         if encoder == self.encoder:
-            # Undescribed media is described once a vision model is available.
+            # Describe previously undescribed media when image support becomes available.
             return not (vision and visual_kind(extension, old['text']))
-        # Described media is kept, even without the vision model, until a different one is installed.
+        # Keep descriptions while AI is unavailable; refresh them when its fingerprint changes.
         return encoder.startswith(self.encoder + '+vision:') and described in (None, encoder)
 
     def search(self, root, query, status_cb=None, progress_cb=None, cancelled=None):
@@ -184,13 +184,9 @@ class FileSearch:
         if not self.runtime.available:
             raise LLMServerError('Set up the local AI engine and Qwen model before searching')
         self.embeddings.prestart(cancelled)
-        # New visual descriptions need the GPU first. When vision is available,
-        # decide which GPU model to start during indexing rather than loading both.
-        if self.vision is None or not self.vision.available:
-            self.runtime.prestart(cancelled)
+        self.runtime.prestart(cancelled)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         os.close(os.open(self.database_path, os.O_CREAT | os.O_RDWR, 0o600))
-        # The index is updated first: describing new photos needs the GPU the search model uses.
         with closing(sqlite3.connect(self.database_path)) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute('''CREATE TABLE IF NOT EXISTS search_files (
@@ -259,6 +255,8 @@ class FileSearch:
 
         walked = []
         reading = ThreadPoolExecutor(READERS, thread_name_prefix='search-read')
+        # Keep one decoded image waiting beside the active shared-model requests.
+        describing = ThreadPoolExecutor(vision.slots + 1 if vision else 1, thread_name_prefix='search-describe')
 
         def index_walked():
             """Index the walked files in walk order, so rows and embedding batches keep that order."""
@@ -276,8 +274,6 @@ class FileSearch:
                     row = {'path': relative, 'mtime_ns': found.st_mtime_ns, 'size': found.st_size, 'text': text}
                     kind = vision and visual_kind(entry.extension, text)
                     if kind:
-                        if not visual:
-                            vision.prestart(cancelled)
                         visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
                         continue
                     pending.append({**row, 'document': self._document(relative, text)})
@@ -333,15 +329,15 @@ class FileSearch:
                             raise
                         skipped += 1
             index_walked()
-            if not visual:
-                self.runtime.prestart(cancelled)
             flush()
             done = 0
             try:
+                descriptions = describing.map(lambda job: vision.describe(*job, status, cancelled),
+                                              [(root / row['path'], row.pop('kind')) for row in visual])
                 for row in visual:
                     check()
                     status(f'Describing photos, videos and scans… {done + 1:,}/{len(visual):,}')
-                    description = vision.describe(root / row['path'], row.pop('kind'), status, cancelled)
+                    description = next(descriptions)
                     pending.append({**row, 'text': description, 'encoder': described,
                                     'document': self._document(row['path'], description)})
                     done += 1
@@ -349,15 +345,12 @@ class FileSearch:
                         flush()
             except LLMServerError:
                 # Index the rest without descriptions; they are described on a later search.
-                log.warning('Vision model failed; indexing remaining media without descriptions', exc_info=True)
+                log.warning('Image description failed; indexing remaining media without descriptions', exc_info=True)
                 for row in visual[done:]:
-                    row.pop('kind', None)
                     pending.append({**row, 'document': self._document(row['path'], row['text'])})
         finally:
             reading.shutdown(cancel_futures=True)
-            if vision:
-                vision.shutdown()  # Free the GPU for the search model.
-        self.runtime.prestart(cancelled)
+            describing.shutdown(cancel_futures=True)
         flush()
         check()
         removed = set(cached) - seen
