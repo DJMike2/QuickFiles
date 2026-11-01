@@ -15,7 +15,7 @@ import numpy as np
 from app.ai.content import read_content
 from app.ai.llm_server import LLMServerError
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
-from app.core.blocked_paths import checked_read_path, resolve_safe, validate_root_selection
+from app.core.blocked_paths import checked_read_path, resolve_safe, validate_root_selection, walk_read_check
 from app.core.inventory import FileEntry
 
 log = logging.getLogger(__name__)
@@ -289,39 +289,42 @@ class FileSearch:
                     skipped += 1
             walked.clear()
 
+        may_read = walk_read_check(root)
+        folders = {str(root): ''}  # Each entered folder's path below the root.
         try:
             for directory, directories, files in os.walk(root, followlinks=False):
                 check()
-                parent = Path(directory)
+                below = folders.pop(directory)
                 allowed = []
                 for name in sorted(directories):
                     if excluded(name) or name in SKIP_DIRECTORIES:
                         continue
-                    try:
-                        checked_read_path(root, (parent/name).relative_to(root).as_posix())
+                    path = os.path.join(directory, name)
+                    if may_read(below + name, path):
+                        folders[path] = below + name + '/'
                         allowed.append(name)
-                    except (OSError, ValueError, RuntimeError):
-                        continue
                 directories[:] = allowed
                 for name in sorted(files):
                     check()
                     if excluded(name):
                         continue
                     try:
-                        relative = (parent/name).relative_to(root).as_posix()
-                        path = checked_read_path(root, relative)
-                        info = path.stat()
+                        relative, path = below + name, os.path.join(directory, name)
+                        if not may_read(relative, path):
+                            skipped += 1
+                            continue
+                        info = os.stat(path)
                         if not stat.S_ISREG(info.st_mode):
                             continue
                         seen.add(relative)
                         old = cached.get(relative)
-                        extension = path.suffix.lower()
+                        extension = Path(name).suffix.lower()
                         if (old and old['mtime_ns'] == info.st_mtime_ns and old['size'] == info.st_size
                                 and len(old['vector']) == self.embeddings.dimensions * 4
                                 and self._reusable(old, extension, vision, described)):
                             walked.append((relative, None, old))
                             continue
-                        entry = FileEntry(relative, name, extension, str(path), size_bytes=info.st_size)
+                        entry = FileEntry(relative, name, extension, path, size_bytes=info.st_size)
                         walked.append((relative, entry, info))
                         if len(walked) >= READ_CHUNK:
                             index_walked()
