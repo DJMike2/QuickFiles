@@ -9,7 +9,7 @@ from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.evidence import compact, literal_passages
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
-from app.ai.prompts import (ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
+from app.ai.prompts import (FOLDER_ROLE_PROMPT, ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
                             MATCH_PROMPT, REVIEW_PROMPT)
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
@@ -57,7 +57,7 @@ class AIRuntime(ModelRuntime):
 
     @property
     def slots(self):
-        if self.binary_manager.hardware.vram_gb < PARALLEL_VRAM_GB:
+        if not getattr(self.binary_manager, 'hardware', None) or self.binary_manager.hardware.vram_gb < PARALLEL_VRAM_GB:
             return 1
         return self.model_manager.runtime_settings['parallel']
 
@@ -95,6 +95,32 @@ class AIRuntime(ModelRuntime):
         if cancelled and cancelled():
             raise InterruptedError("Planning stopped")
         return raw
+
+    @property
+    def model_cache_key(self):
+        return json.dumps({'model': self.model_manager.model_info,
+                           'settings': self.model_manager.runtime_settings}, sort_keys=True)
+
+    def describe_folder(self, evidence, status_cb=None, cancelled=None):
+        schema = {'type': 'object', 'additionalProperties': False,
+            'properties': {'observation': {'type': 'string', 'maxLength': 120},
+                'roles': {'type': 'array', 'minItems': 1, 'maxItems': 1,
+                          'items': {'enum': ['managed', 'filing', 'uncertain']}}},
+            'required': ['observation', 'roles']}
+        raw = self._generate(FOLDER_ROLE_PROMPT, json.dumps({'folders': [
+            {'id': 1, 'evidence': evidence}]}, ensure_ascii=False), status_cb, cancelled,
+            schema=schema, max_tokens=96, temperature=0)
+        try:
+            value = json.loads(raw)
+            if not isinstance(value, dict) or set(value) != {'observation', 'roles'} or len(value['roles']) != 1:
+                raise ValueError('Incomplete folder classification')
+            role, observation = value['roles'][0], value['observation']
+            if (role not in {'managed', 'filing', 'uncertain'} or not isinstance(observation, str)
+                    or not observation.strip() or len(observation) > 120):
+                raise ValueError('Invalid folder classification')
+            return {'role': role, 'observation': observation}
+        except (ValueError, TypeError, KeyError, IndexError) as error:
+            raise LLMServerError('The local model returned an invalid folder classification') from error
 
     @property
     def summary_cache_key(self):
