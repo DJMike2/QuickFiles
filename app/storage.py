@@ -1,6 +1,7 @@
 """SQLite operation journal, with one connection per instance and thread."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -34,6 +35,7 @@ class JournalBatch:
     action_count: int
     undone: bool
     ops: list[JournalOp] = field(default_factory=list)
+    authorization: dict = field(default_factory=dict)
 
 
 class Journal:
@@ -64,6 +66,9 @@ class Journal:
             connection.execute("ALTER TABLE journal_op ADD COLUMN undone INTEGER DEFAULT 0")
         if "sha256" not in columns:
             connection.execute("ALTER TABLE journal_op ADD COLUMN sha256 TEXT DEFAULT ''")
+        batch_columns = {row[1] for row in connection.execute('PRAGMA table_info(journal_batch)')}
+        if 'authorization' not in batch_columns:
+            connection.execute("ALTER TABLE journal_batch ADD COLUMN authorization TEXT NOT NULL DEFAULT '{}'")
         connection.commit()
 
     def connection(self):
@@ -86,10 +91,10 @@ class Journal:
         with connection:
             return connection.execute(sql, parameters).lastrowid
 
-    def begin_batch(self, root, action_count):
+    def begin_batch(self, root, action_count, authorization=None):
         return self._write(
-            "INSERT INTO journal_batch(batch_uuid,root,applied_at,action_count) VALUES(?,?,?,?)",
-            (str(uuid.uuid4()), root, time.time(), action_count),
+            "INSERT INTO journal_batch(batch_uuid,root,applied_at,action_count,authorization) VALUES(?,?,?,?,?)",
+            (str(uuid.uuid4()), root, time.time(), action_count, json.dumps(authorization or {})),
         )
 
     def record_op(self, op: JournalOp):
@@ -101,15 +106,24 @@ class Journal:
              op.src_existed, op.dst_existed_pre, "pending", op.sha256),
         )
 
-    def mark_op_success(self, op_id):
-        self._write("UPDATE journal_op SET succeeded=1,error_msg='' WHERE id=?", (op_id,))
+    def mark_op_success(self, op_id, authorization=None):
+        with self.connection() as connection:
+            connection.execute("UPDATE journal_op SET succeeded=1,error_msg='' WHERE id=?", (op_id,))
+            self._save_authorization(connection, op_id, authorization)
 
     def mark_op_failed(self, op_id, message):
         self._write("UPDATE journal_op SET succeeded=0,error_msg=? WHERE id=?", (message, op_id))
 
-    def mark_op_verification_failed(self, op_id, message):
+    def mark_op_verification_failed(self, op_id, message, authorization=None):
         # The move happened and must remain visible to undo/recovery.
-        self._write("UPDATE journal_op SET succeeded=1,error_msg=? WHERE id=?", (message, op_id))
+        with self.connection() as connection:
+            connection.execute('UPDATE journal_op SET succeeded=1,error_msg=? WHERE id=?', (message, op_id))
+            self._save_authorization(connection, op_id, authorization)
+
+    def _save_authorization(self, connection, op_id, authorization):
+        if authorization is not None:
+            connection.execute('UPDATE journal_batch SET authorization=? WHERE id=(SELECT batch_id FROM journal_op WHERE id=?)',
+                               (json.dumps(authorization), op_id))
 
     def mark_op_undone(self, op_id):
         self._write("UPDATE journal_op SET undone=1 WHERE id=?", (op_id,))
@@ -132,4 +146,6 @@ class Journal:
         records = self.connection().execute(
             "SELECT * FROM journal_op WHERE batch_id=? ORDER BY op_order,id", (batch_id,)
         ).fetchall()
-        return JournalBatch(**dict(row), ops=[JournalOp(**dict(record)) for record in records])
+        batch = dict(row)
+        batch['authorization'] = json.loads(batch['authorization'])
+        return JournalBatch(**batch, ops=[JournalOp(**dict(record)) for record in records])

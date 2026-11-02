@@ -61,9 +61,13 @@ def _native_glob(pattern: str) -> str:
     return "".join(result)
 
 
-def _write_policy(path: Path, excludes):
+def _write_policy(path: Path, excludes, filing_folders):
     fields = [("exclude", _native_glob(pattern)) for pattern in excludes]
-    fields.extend(("marker", name) for name in sorted(PROJECT_MARKERS))
+    if filing_folders is None:
+        fields.extend(("marker", name) for name in sorted(PROJECT_MARKERS))
+    else:
+        fields.append(('restrict', '1'))
+        fields.extend(('filing', '/'.join(relative_parts(folder))) for folder in filing_folders)
     fields.extend(("blocked", str(resolve_safe(root))) for root in blocked_roots())
     with path.open("wb") as output:
         for key, value in fields:
@@ -115,7 +119,7 @@ def _read_output(pipe, chunks, stop):
 
 class Scanner:
     def __init__(self, root: Path, *, content_read_bytes=DEFAULT_CONTENT_READ_BYTES,
-                 exclude_patterns=None, progress_cb=None, cancelled=None, threads=0):
+                 exclude_patterns=None, progress_cb=None, cancelled=None, threads=0, filing_folders=None):
         self.root = resolve_safe(root)
         self._root_string = str(self.root)
         self.content_read_bytes = content_read_bytes
@@ -127,6 +131,7 @@ class Scanner:
             raise ValueError("Scanner threads must be between 0 (auto) and 64")
         self.binary_path = scanner_binary()
         self.native_threads = 0
+        self.filing_folders = filing_folders
 
     def scan(self) -> ScanInventory:
         valid, reason = validate_root_selection(self.root)
@@ -141,7 +146,7 @@ class Scanner:
         # Close the policy before launching to support Windows file sharing.
         with _scratch_dir() as temporary:
             policy = temporary / "policy.bin"
-            _write_policy(policy, self.exclude_patterns)
+            _write_policy(policy, self.exclude_patterns, self.filing_folders)
             with (temporary / "stderr.txt").open("w+b") as diagnostics:
                 process = subprocess.Popen(
                     [str(self.binary_path), str(self.root), str(policy), str(self.threads)],
@@ -180,7 +185,7 @@ class Scanner:
                                 if summary:
                                     raise ValueError("Records after scanner summary")
                                 if kind == "H" and not header:
-                                    if record["protocol"] != 1:
+                                    if record["protocol"] != 2:
                                         raise ValueError("Unsupported scanner protocol; rebuild the binary")
                                     self.native_threads = int(record["threads"])
                                     header = True

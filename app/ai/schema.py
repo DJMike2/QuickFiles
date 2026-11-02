@@ -21,3 +21,4 @@ class OrganizationPlan:
     warnings: list[str] = field(default_factory=list)
     excluded_count: int = 0
     review: dict = field(default_factory=dict)
+    authorization: dict = field(default_factory=dict)
