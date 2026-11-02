@@ -10,9 +10,10 @@ from pathlib import Path, PurePosixPath
 from app.constants import (
     EXECUTABLE_EXTENSIONS, LIBRARY_EXTENSIONS, LIVE_DATA_EXTENSIONS, SHORTCUT_EXTENSIONS,
 )
-from app.core.blocked_paths import checked_path, enforce_project_boundary, resolve_safe, validate_root_selection
+from app.core.blocked_paths import checked_path, resolve_safe, validate_root_selection
 from app.core.naming import relative_parts
 from app.core.file_state import identity
+from app.core.folder_policy import FolderAuthorization
 
 
 @dataclass
@@ -20,9 +21,6 @@ class ValidationReport:
     valid_actions: list = field(default_factory=list)
     rejected_actions: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
-
-
-_PROJECT_MARKERS = (".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod")
 
 
 class Validator:
@@ -46,25 +44,15 @@ class Validator:
         if sys.platform != 'win32' and source.stat().st_mode & 0o111 and not self.executables_movable:
             raise ValueError('Moving executable files requires explicit opt-in')
 
-    def _project_warning(self):
-        try:
-            found = next((name for name in _PROJECT_MARKERS if (self.root / name).exists()), "")
-        except OSError:
-            return ""
-        if not found:
-            return ""
-        return f"This folder looks like a project ({found}). Review moves so the source layout stays intact."
-
-    def validate_plan(self, plan):
+    def validate_plan(self, plan, folder_state=None):
         valid, reason = validate_root_selection(self.root)
         if not valid:
             raise ValueError(reason)
         if resolve_safe(Path(plan.root)) != self.root:
             raise ValueError("The plan belongs to a different folder")
         report = ValidationReport(warnings=list(plan.warnings))
-        project_warning = self._project_warning()
-        if project_warning and project_warning not in report.warnings:
-            report.warnings.insert(0, project_warning)
+        authorization = folder_state or FolderAuthorization(self.root, plan.authorization)
+        checked_folders = set()
         sources = set()
         destinations = {}
 
@@ -83,7 +71,7 @@ class Validator:
                     raise ValueError(f"Unsupported action: {action.type}")
                 action.dst_rel = "/".join(relative_parts(action.dst_rel))
                 destination = checked_path(self.root, action.dst_rel)
-                enforce_project_boundary(self.root, destination)
+                authorization.check(destination, checked=checked_folders)
                 if action.type != "mkdir":
                     action.src_rel = "/".join(relative_parts(action.src_rel))
                     source = checked_path(self.root, action.src_rel)
@@ -92,7 +80,7 @@ class Validator:
                     if key(action.src_rel) in sources:
                         raise ValueError("More than one operation uses this source")
                     self._reject_immovable(source)
-                    enforce_project_boundary(self.root, source)
+                    authorization.check(source, checked=checked_folders)
                     snapshot = identity(source.stat())
                     if action.source_identity is not None and action.source_identity != snapshot:
                         raise ValueError('Source changed since preview; scan again')

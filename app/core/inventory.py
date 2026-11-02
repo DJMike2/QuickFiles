@@ -19,7 +19,7 @@ class ScanInventory:
     root: str
     entries: list[FileEntry] = field(default_factory=list)
     directories: list[str] = field(default_factory=list)
-    protected_projects: list[str] = field(default_factory=list)
+    protected_directories: list[str] = field(default_factory=list)
     content_read_bytes: int = 1200
     skipped_count: int = 0
     error_count: int = 0

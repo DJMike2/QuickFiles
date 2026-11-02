@@ -14,15 +14,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.constants import APP_NAME, CONSERVATIVE_EXTENSIONS, EXECUTABLE_EXTENSIONS, SHORTCUT_EXTENSIONS
-from app.ai.content import read_content
-from app.ai.schema import PlanAction
-from app.core.arrival import ScanIndex, is_ignored
+from app.core.arrival import is_ignored
 from app.core.blocked_paths import validate_root_selection
 from app.core.executor import Executor
-from app.core.inventory import FileEntry
-from app.core.file_state import identity
 from app.core.planner import Planner
-from app.core.scanner import Scanner
 from app.core.undo import UndoEngine
 from app.core.validator import Validator
 from app.ui.first_run_dialog import FirstRunDialog
@@ -51,7 +46,7 @@ class MainWindow(QMainWindow):
         self._opened_at = time.time()
         self._seen_names = set()
         self._pending_sizes = {}
-        self._index = ScanIndex()
+        self._watch_ready = False
         self.setWindowTitle(APP_NAME)
         self.setObjectName("mainWindow")
         # The minimize/maximize hints keep taskbar minimize and Win+arrow snapping on a frameless window.
@@ -257,7 +252,7 @@ class MainWindow(QMainWindow):
 
     def _learn_scan(self):
         if self.inventory is not None:
-            self._index.learn(self.inventory)
+            self._watch_ready = bool(self.inventory.authorization)
         root = self._watch_root()
         if root is not None and self._watching():
             self._note_present(root)
@@ -274,7 +269,7 @@ class MainWindow(QMainWindow):
                 self._arrival_timer.start()
             return
         root = self._watch_root()
-        if root is None or not self._index.folders:
+        if root is None or not self._watch_ready:
             return
         waiting = False
         ready = []
@@ -318,53 +313,27 @@ class MainWindow(QMainWindow):
         return extension not in CONSERVATIVE_EXTENSIONS
 
     def _ask_model(self, root, paths):
-        if not self._index.folders:
+        if not self._watch_ready:
             self.status.setText("New files will be organized after the next scan.")
             return
         if not self.ctx.runtime.available:
             self.status.setText("Local AI is not set up, so the new file was left in place.")
             return
-        folders = dict(self._index.folders)
         shortcuts = self.config.get("shortcuts_movable")
         executables = self.config.get("executables_movable")
+        excludes = list(self.config.get("exclude_patterns") or [])
 
         def operation(status, progress, cancelled):
-            files = []
-            try:
-                for index, path in enumerate(paths, 1):
-                    if cancelled():
-                        raise InterruptedError("Planning stopped")
-                    extension = path.suffix.lower()
-                    stat = path.stat()
-                    entry = FileEntry(
-                        path.name, path.name, extension, str(path), size_bytes=stat.st_size,
-                        modified_ts=stat.st_mtime,
-                        is_conservative=extension in CONSERVATIVE_EXTENSIONS,
-                    )
-                    files.append({
-                        "id": index, "name": path.name, "rel_path": path.name,
-                        "hint": read_content(entry), "source_identity": identity(stat),
-                    })
-                status("Asking local AI about the new file…")
-                assigned = self.ctx.runtime.assign_files(
-                    files, folders, status_cb=status, cancelled=cancelled,
-                )
-                moved = []
-                executor = Executor(root, self.ctx.journal, progress, cancelled, shortcuts, executables)
-                for row in files:
-                    folder = assigned.get(row["rel_path"])
-                    if not folder or cancelled():
-                        continue
-                    action = PlanAction(
-                        "move", row["name"], f"{folder}/{row['name']}",
-                        category=folder, reason="Local AI matched the file to this folder",
-                        source_identity=row['source_identity'],
-                    )
-                    if executor.apply([action]).succeeded:
-                        moved.append((row["name"], folder))
-                return moved
-            finally:
-                self.ctx.runtime.shutdown()
+            _, plan = Planner(self.ctx.runtime, status, cancelled, shortcuts_movable=shortcuts,
+                              executables_movable=executables,
+                              cache_path=self.config.app_data_dir / "organizer_cache.db").scan(
+                root, exclude_patterns=excludes, only_files={path.name for path in paths}, existing_only=True)
+            result = Executor(root, self.ctx.journal, progress, cancelled, shortcuts, executables).apply(plan)
+            if result.batch_id is None:
+                return []
+            batch = self.ctx.journal.get_batch_by_id(result.batch_id)
+            return [(Path(op.src_abs).name, Path(op.dst_abs).parent.relative_to(root).as_posix())
+                    for op in batch.ops if op.succeeded and not op.error_msg and op.op_type == 'move']
 
         self._start("watch", operation)
 
@@ -380,7 +349,7 @@ class MainWindow(QMainWindow):
     def _invalidate(self, *_):
         self.plan = None
         self.inventory = None
-        self._index = ScanIndex()
+        self._watch_ready = False
         self.preview.clear()
         self._buttons()
         if self._watching():
@@ -436,20 +405,13 @@ class MainWindow(QMainWindow):
 
         def operation(status, progress, cancelled):
             log.info("Scan location: %s", root)
-            status("Scanning folder…")
-            with log_stage(log, "Inventory"):
-                inventory = Scanner(root, exclude_patterns=excludes, cancelled=cancelled,
-                                    progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files")).scan()
-            log.info("Inventory: files=%d folders=%d protected=%d skipped=%d errors=%d",
-                     inventory.total_files, len(inventory.directories), len(inventory.protected_projects),
-                     inventory.skipped_count, inventory.error_count)
-            if cancelled():
-                raise InterruptedError("Scan stopped")
-            plan = Planner(self.ctx.runtime, progress_cb=status, cancelled=cancelled,
-                           shortcuts_movable=shortcuts, executables_movable=executables,
-                           allow_suffix_on_collision=False,
-                           summary_cache_path=(None if self.config.app_data_dir.is_relative_to(root) else
-                                               self.config.app_data_dir / "organizer_summaries.db")).plan(inventory)
+            status("Checking folder structure…")
+            with log_stage(log, "Organizer scan"):
+                inventory, plan = Planner(self.ctx.runtime, status, cancelled,
+                    shortcuts_movable=shortcuts, executables_movable=executables,
+                    cache_path=self.config.app_data_dir / "organizer_cache.db").scan(
+                        root, exclude_patterns=excludes,
+                        progress_cb=lambda n, total, name: status(f"Scanning… {n:,} files"))
             if cancelled():
                 raise InterruptedError("Planning stopped")
             status("Validating proposed changes…")
@@ -478,7 +440,7 @@ class MainWindow(QMainWindow):
         def operation(status, progress, cancelled):
             return Executor(
                 Path(plan.root), self.ctx.journal, progress, cancelled, shortcuts, executables,
-            ).apply(plan.actions)
+            ).apply(plan)
 
         self._start("apply", operation)
 
@@ -547,7 +509,6 @@ class MainWindow(QMainWindow):
         elif kind == "watch":
             moved = worker.result or []
             for name, folder in moved:
-                self._index.add(folder, name)
                 self._tray.showMessage(APP_NAME, f"{name} moved to {folder}",
                                        QSystemTrayIcon.MessageIcon.Information, 5000)
             self.status.setText(

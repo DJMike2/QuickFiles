@@ -3,9 +3,10 @@ from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 
-from app.core.blocked_paths import checked_path, enforce_project_boundary, resolve_safe
+from app.core.blocked_paths import checked_path, resolve_safe
 from app.core.executor import safe_move
 from app.core.file_state import file_hash, identity
+from app.core.folder_policy import FolderAuthorization
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class UndoEngine:
             raise ValueError("No pending batch to undo")
         if resolve_safe(Path(batch.root)) != self.root:
             raise ValueError("Journal root does not match the selected batch")
+        self._folders = FolderAuthorization(self.root, batch.authorization) if batch.authorization else None
         operations = [op for op in batch.ops if op.succeeded and not op.undone]
         result = UndoResult()
         for index, operation in enumerate(reversed(operations)):
@@ -52,15 +54,21 @@ class UndoEngine:
 
     def _reverse(self, operation):
         destination = self._path(operation.dst_abs)
-        enforce_project_boundary(self.root, destination)
+        if self._folders:
+            self._folders.check(destination, fresh=False)
         if operation.op_type == "mkdir":
             if not operation.dst_existed_pre and destination.exists():
+                if self._folders:
+                    self._folders.check(destination / '__check__', fresh=False)
                 destination.rmdir()  # Never remove a directory that now contains files.
             return
         if operation.op_type not in {"move", "rename"}:
             raise ValueError(f"Cannot undo unsupported operation: {operation.op_type}")
         source = self._path(operation.src_abs)
-        enforce_project_boundary(self.root, source)
+        if self._folders:
+            if not source.parent.is_dir():
+                raise ValueError('Original folder no longer exists; file was preserved')
+            self._folders.check(source, fresh=False)
         if not destination.is_file():
             raise FileNotFoundError(f"File is no longer at {destination}")
         snapshot = identity(destination.stat())
@@ -71,6 +79,8 @@ class UndoEngine:
         if source.exists() or source.is_symlink():
             raise FileExistsError(f"Original location is occupied: {source}")
         source.parent.mkdir(parents=True, exist_ok=True)
+        self._path(operation.src_abs)
+        self._path(operation.dst_abs)
         if identity(destination.stat()) != snapshot:
             raise ValueError(f'File changed before undo: {destination}')
         safe_move(destination, source)

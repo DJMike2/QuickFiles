@@ -78,7 +78,7 @@ def reuse_decision(prompt, accepted):
                       if k not in {'self', 'status_cb', 'cancelled'}}
             # Do not sort nested dictionaries: the model sees their original order.
             key = hashlib.sha256(json.dumps(
-                [method.__name__, prompt, self.summary_cache_key, inputs],
+                [method.__name__, prompt, self.model_cache_key, inputs],
                 ensure_ascii=True).encode('utf-8')).hexdigest()
             cache = self._organizer_decisions
             cache.bind(self._generate)
