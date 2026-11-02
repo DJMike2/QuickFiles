@@ -39,9 +39,10 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
-static constexpr int protocol = 1;
+static constexpr int protocol = 2;
 static std::wstring wide(const std::string& value) {
 #ifdef _WIN32
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
@@ -84,6 +85,8 @@ static std::string quote(const std::string& value) {
 struct Policy {
     std::vector<std::wregex> exclude;
     std::vector<std::wstring> blocked, markers;
+    std::unordered_set<std::wstring> filing;
+    bool restricted = false;
 } policy;
 
 static std::wstring normalized_path(std::wstring path) {
@@ -114,6 +117,8 @@ static void read_policy(const std::string& filename) {
 #endif
             policy.blocked.push_back(std::move(path));
         }
+        else if (key == "restrict" && value == "1") policy.restricted = true;
+        else if (key == "filing") policy.filing.insert(normalized_path(wide(value)));
         else if (key == "marker") policy.markers.push_back(wide(value));
         else throw std::runtime_error("Unknown scanner policy field");
     }
@@ -325,12 +330,16 @@ static void directory_record(char type, const Task& task, std::string& buffer) {
     buffer += "\",\"p\":" + quote(utf8(task.relative)) + "}\n";
 }
 static void process(const Task& task, std::string& buffer) {
+    if (!task.relative.empty() && policy.restricted && !policy.filing.count(normalized_path(task.relative))) {
+        directory_record('P', task, buffer);
+        return;
+    }
     std::vector<Item> items;
     bool ok = list_directory(task, items);
     if (!ok) ++errors;
     if (!task.relative.empty()) {
-        bool project = !ok || folded(task.relative.substr(task.relative.find_last_of(L'/') + 1)) == L"issetupprerequisites";
-        for (const auto& item : items) if (marker(item.name)) {
+        bool project = !ok || (!policy.restricted && folded(task.relative.substr(task.relative.find_last_of(L'/') + 1)) == L"issetupprerequisites");
+        for (const auto& item : items) if (!policy.restricted && marker(item.name)) {
             project = true;
             break;
         }
@@ -339,11 +348,11 @@ static void process(const Task& task, std::string& buffer) {
     } else if (!ok) throw std::runtime_error("Cannot read selected folder");
     for (const auto& item : items) {
         if (output_failed) return;
-        if (excluded(item.name) || !valid_name(item.name) || protected_name(item.name)) {
+        const auto relative = task.relative.empty() ? item.name : task.relative + L'/' + item.name;
+        if (excluded(item.name) || excluded(relative) || !valid_name(item.name) || protected_name(item.name)) {
             if (!item.directory) ++skipped;
             continue;
         }
-        const auto relative = task.relative.empty() ? item.name : task.relative + L'/' + item.name;
         if (item.link || blocked(root + L'/' + relative) || (!item.directory &&
             (!item.regular || (item.attributes & (0x4 | 0x1000 | 0x40000 | 0x400000))))) {
             if (!item.directory) ++skipped;

@@ -23,6 +23,7 @@ class ScanInventory:
     content_read_bytes: int = 1200
     skipped_count: int = 0
     error_count: int = 0
+    authorization: dict = field(default_factory=dict)
 
     @property
     def total_files(self):
