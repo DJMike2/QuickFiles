@@ -5,78 +5,77 @@
 [Setup](../README.md#get-started) · [Measured performance](benchmarks.md)
 
 > [!TIP]
-> File analysis runs on your computer. No cloud API key is needed, and scanning
-> never moves your files. Internet access is needed for engine/model downloads.
+> Analysis runs locally. Scanning never moves your files; internet access is needed
+> to download the engine and model.
 
 ```mermaid
 flowchart LR
-    A[Choose a folder] --> B[Read evidence]
-    B --> C[Plan and review]
-    C --> D[Before / After]
-    D -->|You approve| E[Apply and verify]
-    E --> F[Undo]
+    A[Check folders] --> B[Read evidence]
+    B --> C[Group and match]
+    C --> D[Independent review]
+    D --> E[Before / After]
+    E -->|You approve| F[Apply and verify]
+    F --> G[Undo]
 ```
 
 ## From folder to preview
 
 | Step | What happens |
 | --- | --- |
-| **1 · Find the real folder** | Resolve the selected path and validate the location. Linked files and subfolders are not followed. |
-| **2 · Preserve structure** | Keep existing folder contents, recognized projects, applications, and system paths in place. |
-| **3 · Select loose files** | Skip empty stubs and protected types. Executable and shortcut eligibility follow their separate settings. |
-| **4 · Read contents** | Collect bounded document excerpts. Record unreadable, unsupported, and offline content honestly. |
-| **5 · Keep grounded evidence** | Use literal excerpts and explicit identifiers rather than inventing summaries. |
-| **6 · Understand destinations** | Read a few direct samples from existing folders to identify their purpose. |
-| **7 · Find shared subjects** | Group related files while keeping distinct courses, clients, and projects separate. |
-| **8 · Match with support** | Prefer suitable existing folders. Require a supported reason and passage for semantic matches. |
-| **9 · Review independently** | Challenge proposed placements using the evidence, then check paths, file changes, and group sizes again. |
-| **10 · Apply and verify** | After approval, move without overwriting, verify file hashes, and record operations for undo. |
+| **Check the location** | Resolve the selected folder. Preserve system paths, exclusions, links and protected file types. |
+| **Understand folders** | The model checks bounded file/layout evidence to distinguish filing collections from applications, projects and managed data. Uncertain folders stay untouched. |
+| **Read loose files** | Collect literal document excerpts, archive member names or honest filename/type fallbacks. Existing folder contents stay in place. |
+| **Understand destinations** | Sample direct files from approved filing folders. The model judges their purpose without fixed subject or folder-name aliases. |
+| **Group and match** | Find shared subjects, prefer suitable existing folders, and require evidence for each placement. New folders need at least two supported files. |
+| **Review independently** | A separate model decision challenges each proposed placement. Unsupported matches stay where they are. |
+| **Validate the preview** | Check paths, collisions, source identities and folder snapshots before offering moves. |
 
-## What happens when evidence is limited?
+A folder's own text cannot authorize entry by itself: when a filing judgment uses
+text previews, a second layout-only check can hold it back. This reduces misleading
+README effects; model decisions still need your review.
 
-| File situation | Organizer behavior |
+## When evidence is limited
+
+| Situation | Behavior |
 | --- | --- |
 | Readable document | Contents take priority over a misleading filename. |
-| Unreadable or online-only file | Use filename/type facts without inventing a narrower subject. |
-| ZIP archive | Member names are a listing; enclosed document contents are not read. |
-| Uncertain match | Leave the file in place. |
-| Existing project or application folder | Preserve it; do not regroup its contents. |
+| Unreadable or unsupported file | Use filename/type facts without inventing a narrower subject. |
+| ZIP archive | Sample member names, without unpacking enclosed files. Oversized ZIPs or archive indexes fall back to filename/type. |
+| Application, project or uncertain folder | Do not traverse it or offer it as a destination. |
+| No justified match | Leave the file in place. |
 
-## Safeguards you can review
+## Applying and undoing
 
-- **New groups need two files.** An existing suitable folder can receive one.
-- **Source changes invalidate a move.** Files are checked again before applying.
-- **Occupied destinations are preserved.** The app rejects collisions rather than replacing files.
-- **Undo checks the destination.** Changed files and occupied original paths are preserved.
+- **Folder changes require another scan.** Approved folders and source files are checked again before each move; the app accounts for its own changes within the batch.
+- **No overwrites.** Occupied destinations are rejected. Completed moves are checked with SHA-256 and recorded in a local journal.
+- **Undo touches journalled paths only.** It checks folder identities, file hashes and occupied original locations. Changed files and nonempty created folders are preserved.
 
-Folder protection uses conservative markers; it cannot recognize every application.
-Review the preview before applying, especially on unfamiliar folders.
+Filesystem changes and journal commits are separate operations; crash-atomic
+recovery is not promised. Older journal records may lack hashes or folder snapshots.
 
-## Faster follow-up scans
+## Follow-up scans
 
-Models start loading when work begins. Exact, validated decisions can be reused
-within the same model session; evidence and filesystem checks still run each scan.
-Models unload after **five idle minutes**. Changed inputs need fresh decisions.
+Unchanged folder judgments and readable evidence can be reused from a local cache.
+Changed evidence, prompts, models or settings invalidate the relevant decisions;
+uncertain judgments and unreadable content are retried. Exact validated model
+responses can also be reused within the current session.
 
-Optional **Watch for new files** can sort new arrivals automatically when enabled.
-
-[See fresh measurements and their limits →](benchmarks.md)
+Models load when work begins and unload after **five idle minutes**. Optional
+**Watch for new files** uses the same folder, matching, review and apply checks,
+placing arrivals into existing folders only.
 
 <details>
-<summary><strong>Technical boundaries</strong></summary>
+<summary><strong>Evidence limits and implementation</strong></summary>
 
-| Area | Limit |
+| Area | Bound |
 | --- | --- |
-| Evidence | Up to three PDF pages; bounded Office/text excerpts; no organizer OCR or media transcription. |
-| Existing folders | At most four direct file samples, up to 1,600 characters each. Parent containers do not inherit child subjects. |
-| New destinations | At most two new folder levels. Existing deeper hierarchies can be reused. |
-| Model support | Numbered passages resolve back to literal evidence from the same file. A quote alone is not semantic approval. |
-| Cache | Complete inputs, prompts, model, and settings identify reusable decisions. Holds and uncertain results are not retained. |
-| Apply | Preflight the plan, check each source, journal the operation, move, then verify SHA-256 and source absence. |
-| Recovery | Filesystem moves and journal commits are separate operations; crash-atomic recovery is not promised. Older journal records may lack hashes. |
+| Folder role | Up to 32 direct entries, one child-layout level and three small text previews; 3,500 characters per view. Metadata checks still scale with direct entry counts. |
+| File contents | Up to three PDF pages; bounded Office/text excerpts. No organizer OCR or media transcription. |
+| Existing destinations | Up to three direct samples, read within 4,096 bytes and included within 600 characters each. Parent containers do not inherit child subjects. |
+| Model support | Numbered passages resolve to literal evidence from the same file. A quote alone is not semantic approval. |
 
-Implementation: [Preparation](../app/core/preparation.py) ·
-[Planning](../app/core/planner.py) · [Review](../app/core/reviewer.py) ·
-[Apply](../app/core/executor.py) · [Undo](../app/core/undo.py)
+[Folder checks](../app/core/folder_policy.py) · [Evidence](../app/core/preparation.py) ·
+[Planning and review](../app/core/planner.py) · [Apply](../app/core/executor.py) ·
+[Undo](../app/core/undo.py)
 
 </details>
