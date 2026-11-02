@@ -189,7 +189,7 @@ class FolderPolicy:
         with log_stage(log, 'Folder classification'):
             role, state = classify(root)
             if role != 'filing':
-                return ScanInventory(str(root), protected_projects=['.'])
+                return ScanInventory(str(root), protected_directories=['.'])
             records['.'] = state
             pending = list(children(root))
             with ThreadPoolExecutor(max_workers=self.runtime.slots) as pool:
@@ -208,7 +208,7 @@ class FolderPolicy:
             inventory = Scanner(root, exclude_patterns=patterns, progress_cb=progress_cb,
                                 cancelled=self.cancelled, threads=threads, filing_folders=allowed).scan()
         inventory.authorization = records
-        inventory.protected_projects = sorted(set(inventory.protected_projects + protected))
+        inventory.protected_directories = sorted(set(inventory.protected_directories + protected))
         log.info('Inventory: files=%d folders=%d protected=%d skipped=%d errors=%d', inventory.total_files,
-                 len(inventory.directories), len(inventory.protected_projects), inventory.skipped_count, inventory.error_count)
+                 len(inventory.directories), len(inventory.protected_directories), inventory.skipped_count, inventory.error_count)
         return inventory

@@ -206,9 +206,9 @@ class AIRuntime(ModelRuntime):
         """Small batches retain every file; context overflow splits instead of sampling away files."""
         if not rows:
             return []
-        from app.core.organization import SCOPES
+        scopes = ('course', 'client', 'project', 'topic', 'kind', 'unknown', 'mixed')
         properties = {'description': {'type': 'string', 'maxLength': 200},
-            'scope_kind': {'enum': list(SCOPES)},
+            'scope_kind': {'enum': list(scopes)},
             'scope': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'maxLength': 80}},
             'topic': {'type': 'string', 'maxLength': 96},
             'quote': {'type': 'string', 'maxLength': 140}}

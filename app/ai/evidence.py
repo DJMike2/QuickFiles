@@ -1,4 +1,4 @@
-"""Bounded, read-only evidence for organizer summaries, separate from search snippets."""
+"""Bounded, read-only evidence for organization, separate from search snippets."""
 from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
@@ -189,20 +189,9 @@ def extract_evidence(entry, read_limit=32768, *, cancelled=None):
             NotImplementedError, subprocess.SubprocessError):
         log.warning('Could not read file content: %s', path, exc_info=True)
         return ContentEvidence("unreadable", limitation="Content could not be read; filename only")
-    # Preserve explicit field/paragraph boundaries for identity extraction.
+    # Preserve field and paragraph boundaries for model interpretation.
     # Quote validation separately normalizes whitespace with compact().
     text = '\n'.join(compact(line) for line in text.splitlines() if line.strip())
-    if extension == ".pdf" and "onenote" in text.casefold():
-        # Handwritten OneNote exports can expose only dates, URLs and a generic
-        # homework heading. Those headers do not mean the page body was readable.
-        without_links = re.sub(r"https?://\S+", "", text, flags=re.I)
-        words = set(re.findall(r"[^\W\d_]+", without_links.casefold()))
-        export_words = set(("onenote homework fhw assignment notes lecture am pm "
-                            "monday tuesday wednesday thursday friday saturday sunday "
-                            "january february march april may june july august september october november december").split())
-        if words <= export_words:
-            return ContentEvidence("no_body_text", limitation=(
-                "Only export headers were readable; page body unavailable, filename only"))
     cap = min(limit, 12000)
     if len(text) > cap:
         limitation += f"; extracted text capped at {cap:,} characters"

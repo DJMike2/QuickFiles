@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.ai.schema import OrganizationPlan
 from app.core.blocked_paths import checked_path, resolve_safe
+from app.core.folder_policy import FolderAuthorization
 from app.core.validator import Validator
 from app.core.file_state import file_hash, identity
 from app.storage import JournalOp
@@ -90,25 +91,29 @@ class Executor:
             parent = parent.parent
         for directory in reversed(missing):
             checked_path(self.root, directory.relative_to(self.root).as_posix())
+            self._folders.check(directory)
             op_id = self._record(batch_id, "mkdir", directory, directory)
             try:
                 directory.mkdir()
-                self.journal.mark_op_success(op_id)
+                self._folders.created(directory)
+                self.journal.mark_op_success(op_id, self._folders.records)
             except Exception as exc:
                 self.journal.mark_op_failed(op_id, str(exc))
                 raise
 
-    def apply(self, actions):
+    def apply(self, plan):
         result = ExecutionResult()
+        actions = plan.actions
         if not actions:
             return result
         if self.cancelled():
             result.skipped = len(actions)
             return result
         # Check the complete approved map before creating a batch or any directory.
+        self._folders = FolderAuthorization(self.root, plan.authorization)
         report = Validator(self.root, allow_suffix_on_collision=False,
             shortcuts_movable=self.shortcuts_movable,
-            executables_movable=self.executables_movable).validate_plan(OrganizationPlan(str(self.root), actions))
+            executables_movable=self.executables_movable).validate_plan(plan, self._folders)
         if report.rejected_actions:
             result.failed = len(report.rejected_actions)
             result.skipped = len(actions) - result.failed
@@ -116,7 +121,7 @@ class Executor:
             log.warning('Apply preflight failed for %s: %s', self.root, '; '.join(result.errors))
             return result
         actions = report.valid_actions
-        batch_id = self.journal.begin_batch(str(self.root), len(actions))
+        batch_id = self.journal.begin_batch(str(self.root), len(actions), self._folders.records)
         result.batch_id = batch_id
         for index, action in enumerate(actions):
             if self.cancelled():
@@ -130,7 +135,7 @@ class Executor:
                 report = Validator(
                     self.root, shortcuts_movable=self.shortcuts_movable,
                     executables_movable=self.executables_movable,
-                ).validate_plan(OrganizationPlan(str(self.root), [action]))
+                ).validate_plan(OrganizationPlan(str(self.root), [action]), self._folders)
                 if report.rejected_actions:
                     raise ValueError(report.rejected_actions[0][1])
                 action = report.valid_actions[0]
@@ -147,10 +152,13 @@ class Executor:
                 op_id = self._record(batch_id, action.type, source, destination, checksum)
                 if action.type == "mkdir":
                     destination.mkdir()
+                    self._folders.created(destination)
                 else:
                     # Check again after parent creation/journaling, immediately before mutation.
                     if identity(source.stat()) != action.source_identity:
                         raise ValueError('Source changed before moving; scan again')
+                    self._folders.check(source)
+                    self._folders.check(destination)
                     safe_move(source, destination)
                 moved = True
                 # Once a move starts, finish verifying that file even if cancellation arrives.
@@ -161,7 +169,9 @@ class Executor:
                 elif (source.exists() or not destination.is_file() or destination.is_symlink()
                       or file_hash(destination) != checksum):
                     raise OSError('Destination verification failed; consult the journal before retrying')
-                self.journal.mark_op_success(op_id)
+                if action.type != 'mkdir':
+                    self._folders.moved(source, destination)
+                self.journal.mark_op_success(op_id, self._folders.records)
                 result.succeeded += 1
             except InterruptedError:
                 result.skipped += len(actions) - index
@@ -170,7 +180,7 @@ class Executor:
                 log.exception('Apply failed for %s -> %s', action.src_rel, action.dst_rel)
                 if op_id is not None:
                     if moved:
-                        self.journal.mark_op_verification_failed(op_id, str(exc))
+                        self.journal.mark_op_verification_failed(op_id, str(exc), self._folders.records)
                     else:
                         self.journal.mark_op_failed(op_id, str(exc))
                 result.failed += 1

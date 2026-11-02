@@ -460,8 +460,8 @@ class PreviewPanel(QWidget):
         state = STATES.get(node.diff_state)
         self._row("Status", state[0] if state else "Unchanged",
                   (state[2] if self._dark else state[1]) if state else "#888")
-        if self.inventory and node.rel_path in self.inventory.protected_projects:
-            self._row("Protected", "Project folder. Contents are excluded and left unchanged.", "#888")
+        if self.inventory and node.rel_path in self.inventory.protected_directories:
+            self._row("Protected", "Folder kept unchanged. Contents are excluded from this scan.", "#888")
         if node.action:
             action = node.action
             line = QFrame()
@@ -759,7 +759,7 @@ class PreviewPanel(QWidget):
             return False
         candidate = OrganizationPlan(self.plan.root, actions, list(self.plan.warnings), review={
             'user_edited': True, 'original_proposed': self.plan.review.get('proposed'),
-            'original_retained': self.plan.review.get('retained')})
+            'original_retained': self.plan.review.get('retained')}, authorization=self.plan.authorization)
         report = Validator(Path(self.plan.root), allow_suffix_on_collision=False,
                            shortcuts_movable=self.shortcuts_movable,
                            executables_movable=self.executables_movable).validate_plan(candidate)

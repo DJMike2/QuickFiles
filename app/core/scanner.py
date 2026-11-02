@@ -233,7 +233,7 @@ class Scanner:
         # Native workers finish out of order. Preserve stable planner IDs.
         inventory.entries.sort(key=_entry_order)
         inventory.directories.sort()
-        inventory.protected_projects.sort()
+        inventory.protected_directories.sort()
         return inventory
 
     def _add_record(self, record, inventory):
@@ -249,7 +249,7 @@ class Scanner:
         if record["t"] in {"P", "D"}:
             inventory.directories.append(relative)
             if record["t"] == "P":
-                inventory.protected_projects.append(relative)
+                inventory.protected_directories.append(relative)
             return
         name = parts[-1]
         _, dot, suffix = name.rpartition(".")
