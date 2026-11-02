@@ -20,11 +20,6 @@ from app.core.blocked_paths import blocked_roots, resolve_safe, validate_root_se
 from app.core.inventory import FileEntry, ScanInventory
 from app.core.naming import relative_parts
 
-PROJECT_MARKERS = {".git", "package.json", "manifest.json", "pyproject.toml", "requirements.txt",
-                   "Cargo.toml", "go.mod", "CMakeLists.txt", "node_modules", ".venv", "venv", "setup.py",
-                   ".project", "steam_appid.txt", "UnityPlayer.dll", "unityplayer.dll",
-                   "GameAssembly.dll", "gameassembly.dll", "resources.pak",
-                   "unins000.exe", "Uninstall.exe", "uninstall.exe", "SupportPackages"}
 NATIVE_DIR = Path(__file__).resolve().parent / "native"
 log = logging.getLogger(__name__)
 
@@ -63,9 +58,7 @@ def _native_glob(pattern: str) -> str:
 
 def _write_policy(path: Path, excludes, filing_folders):
     fields = [("exclude", _native_glob(pattern)) for pattern in excludes]
-    if filing_folders is None:
-        fields.extend(("marker", name) for name in sorted(PROJECT_MARKERS))
-    else:
+    if filing_folders is not None:
         fields.append(('restrict', '1'))
         fields.extend(('filing', '/'.join(relative_parts(folder))) for folder in filing_folders)
     fields.extend(("blocked", str(resolve_safe(root))) for root in blocked_roots())

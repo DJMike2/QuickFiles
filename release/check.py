@@ -60,7 +60,7 @@ def _run_checks(engine):
         project = files / "project"
         (project / ".git").mkdir(parents=True)
         (project / "keep.txt").write_text("Protected project file", encoding="utf-8")
-        inventory = Scanner(files).scan()
+        inventory = Scanner(files, filing_folders=[]).scan()
         assert {entry.rel_path for entry in inventory.entries} == {"notes.txt", "document.pdf", "picture.png"}
         notes = next(entry for entry in inventory.entries if entry.filename == "notes.txt")
         assert read_content(notes) == "QuickFiles compatibility check"
@@ -103,7 +103,7 @@ def _run_checks(engine):
                     logging.getLogger().removeHandler(handler)
     return {"passed": True, "platform": sys.platform, "qt": qVersion(),
             "glibc": glibc_version() if sys.platform == "linux" else None,
-            "checks": ["scanner", "project protection", "PDF text/image/video libraries", "themes", "GUI open/close",
+            "checks": ["scanner", "folder authorization", "PDF text/image/video libraries", "themes", "GUI open/close",
                        "external libraries"] + (["CPU engine startup"] if engine else [])}
 
 

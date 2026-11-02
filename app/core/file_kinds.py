@@ -6,10 +6,6 @@ from app.constants import SEARCH_KINDS
 
 KINDS = ('code', 'presentation', 'spreadsheet', 'image', 'audio', 'video', 'archive',
          'ai model', 'disk image', 'document', 'installer', 'shortcut')
-KIND_LABELS = {'code': 'Code', 'presentation': 'Presentations', 'spreadsheet': 'Spreadsheets',
-              'image': 'Images', 'audio': 'Audio', 'video': 'Videos', 'archive': 'Archives',
-              'ai model': 'AI Models', 'disk image': 'Disk Images', 'document': 'Documents',
-              'installer': 'Installers', 'shortcut': 'Shortcuts'}
 # The noun after the format in a type such as "PDF document"; code reads best as "PY file".
 KIND_NOUNS = {'code': 'file', 'presentation': 'presentation', 'spreadsheet': 'spreadsheet',
               'image': 'image', 'audio': 'audio', 'video': 'video', 'archive': 'archive',
@@ -35,13 +31,3 @@ def type_label(name, *, is_dir=False, executable=False):
     # Compressed tarballs are known by both parts: "TAR.GZ archive".
     shown = ''.join(suffixes[-2:]) if kind == 'archive' and suffixes[-2:-1] == ['.tar'] else extension
     return f'{shown[1:].upper()} {KIND_NOUNS[kind] if kind else "file"}'
-
-
-def folder_kind(name):
-    """Only unambiguous broad labels; e.g. Models alone does not establish AI weights."""
-    label = re.sub(r'[^\w]+', '', name.casefold())
-    aliases = {'audio': {'audio', 'music', 'songs'}, 'image': {'images', 'pictures', 'photos'},
-               'video': {'video', 'videos', 'movies'}, 'code': {'code', 'sourcecode'},
-               'archive': {'archives'}, 'ai model': {'aimodels', 'llmmodels'},
-               'disk image': {'diskimages', 'isos'}, 'document': {'documents', 'docs', 'pdfs'}}
-    return next((kind for kind, names in aliases.items() if label in names), '')

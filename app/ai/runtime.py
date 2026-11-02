@@ -9,7 +9,7 @@ from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.evidence import compact, literal_passages
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
-from app.ai.prompts import (FOLDER_ROLE_PROMPT, ASSIGN_PROMPT, FILE_SUMMARY_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
+from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
                             MATCH_PROMPT, REVIEW_PROMPT)
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
@@ -25,9 +25,6 @@ def _split_existing(rows, existing):
         len(json.dumps(existing, ensure_ascii=False).encode('utf-8')) >
         len(json.dumps(rows, ensure_ascii=False).encode('utf-8')))
 
-
-class SummaryGroundingError(LLMServerError):
-    """A completed summary failed evidence checks; the file must remain unassigned."""
 
 # A small model fills optional fields eagerly, so each filter is kept only when the
 # request itself contains words that could have asked for it.
@@ -121,86 +118,6 @@ class AIRuntime(ModelRuntime):
             return {'role': role, 'observation': observation}
         except (ValueError, TypeError, KeyError, IndexError) as error:
             raise LLMServerError('The local model returned an invalid folder classification') from error
-
-    @property
-    def summary_cache_key(self):
-        manager = self.model_manager
-        return json.dumps({'model': manager.model_info,
-                           'settings': manager.runtime_settings, 'prompt': FILE_SUMMARY_PROMPT},
-                          sort_keys=True)
-
-    def summarize_file(self, source, *, basis, status_cb=None, cancelled=None):
-        """One constrained call per file; exact evidence spans are verified outside the LLM."""
-        if basis not in {'content', 'filename', 'archive_listing'}:
-            raise ValueError('Unknown summary evidence basis')
-        def strings(count, length):
-            return {'type': 'array', 'maxItems': count,
-                    'items': {'type': 'string', 'maxLength': length}}
-        schema = {'type': 'object', 'additionalProperties': False, 'properties': {
-            'subject': {'type': 'string', 'maxLength': 96},
-            'identifiers': strings(6, 64), 'quotes': strings(3, 140)},
-            'required': ['subject', 'identifiers', 'quotes']}
-        # On context overflow shorten evidence, never fall back silently to a misleading name.
-        sample = source
-        feedback = ''
-        for attempt in range(2):
-            value, sample, feedback = self._summarize_attempt(
-                sample, basis, schema, feedback, status_cb, cancelled)
-            if value is not None:
-                return value
-            log.debug('Retrying file summary after evidence validation: %s', feedback)
-        raise SummaryGroundingError(f'The local model returned an ungrounded file summary: {feedback}')
-
-    def _summarize_attempt(self, sample, basis, schema, feedback, status_cb, cancelled):
-        if feedback:
-            # A correction should be simpler, especially for formula-heavy text.
-            schema = json.loads(json.dumps(schema))
-            schema['properties']['quotes']['maxItems'] = 1
-            schema['properties']['quotes']['items']['maxLength'] = 96
-            schema['properties']['identifiers']['maxItems'] = 3
-        while True:
-            try:
-                raw = self._generate(FILE_SUMMARY_PROMPT, json.dumps(
-                    {'basis': basis, 'evidence': sample, **({'validation_error': feedback,
-                      'retry_instruction': 'Correct the error. Copy one short exact evidence quote; '
-                                           'do not paraphrase quotes or invent identifiers.'} if feedback else {})},
-                    ensure_ascii=False), status_cb, cancelled,
-                    schema=schema, max_tokens=1024, temperature=0)
-                break
-            except IncompleteResponseError:
-                if len(sample) > 800:
-                    sample = sample[:len(sample) // 2]
-                return None, sample, 'Response was incomplete. Select one short heading and only essential identifiers.'
-            except ContextTooLargeError:
-                if len(sample) <= 800:
-                    raise LLMServerError('The file evidence does not fit the local model context')
-                sample = sample[:len(sample) // 2]
-        try:
-            value = json.loads(raw)
-            if not isinstance(value, dict) or not isinstance(value.get('subject'), str):
-                raise ValueError('Missing subject')
-            for key in ('quotes', 'identifiers'):
-                if not isinstance(value.get(key), list) or any(not isinstance(x, str) for x in value[key]):
-                    raise ValueError('Invalid summary evidence')
-            normalized = compact(sample)
-            value['subject'] = compact(value['subject'])
-            if len(value['subject']) > 96 or len(value['quotes']) > 3 or len(value['identifiers']) > 6:
-                raise ValueError('Invalid summary size')
-            if any(not compact(quote) or len(compact(quote)) > 140 or compact(quote) not in normalized
-                   for quote in value['quotes']):
-                raise ValueError('Summary quoted text absent from the file evidence')
-            if value['subject'] and value['subject'] not in normalized:
-                raise ValueError('Subject must be copied exactly from the evidence')
-            if any(not item.strip() or item.casefold() not in normalized.casefold()
-                   for item in value['identifiers']):
-                raise ValueError('Summary invented an identifier')
-            if (value['subject'] or value['identifiers']) and not value['quotes']:
-                raise ValueError('Summary subject has no supporting evidence')
-            value['quotes'] = [compact(quote) for quote in value['quotes']]
-            value['summary'] = ' … '.join(value['quotes']) if value['quotes'] else 'Insufficient subject evidence'
-            return value, sample, ''
-        except (TypeError, ValueError, KeyError) as exc:
-            return None, sample, str(exc)
 
     def profile_items(self, rows, status_cb=None, cancelled=None):
         """Small batches retain every file; context overflow splits instead of sampling away files."""
@@ -434,50 +351,6 @@ class AIRuntime(ModelRuntime):
             return result
         except (ValueError, TypeError, KeyError, AttributeError):
             return held('Independent review returned an incomplete or invalid judgment')
-
-    def assign_files(self, files, folders, status_cb=None, cancelled=None):
-        if not files or not folders:
-            return {}
-        choices = list(folders)
-        mapping = [{'id': index, 'path': path, 'holds': folders[path]}
-                   for index, path in enumerate(choices, 1)]
-        system = ASSIGN_PROMPT + '\nDestinations: ' + json.dumps(
-            mapping, ensure_ascii=False, separators=(',', ':'))
-        literals = ' | '.join(json.dumps(str(number)) for number in range(len(choices) + 1))
-        batch_size = self.model_manager.runtime_settings['batch_size']
-
-        def assign(batch):
-            grammar = 'root ::= ' + ' '.join(
-                json.dumps(f"{row['id']}:") + ' folder "\\n"' for row in batch)
-            grammar += '\nfolder ::= ' + literals
-            user = json.dumps([{'id': row['id'], 'name': row['name'], 'hint': row['hint']}
-                               for row in batch], ensure_ascii=False, separators=(',', ':'))
-            try:
-                raw = self._generate(system, user, status_cb, cancelled,
-                                     max_tokens=12 * len(batch) + 32, grammar=grammar)
-            except ContextTooLargeError:
-                if len(batch) <= 1:
-                    raise LLMServerError("Too many destination folders. Choose a smaller folder to organize.")
-                middle = len(batch) // 2
-                return {**assign(batch[:middle]), **assign(batch[middle:])}
-            lines = raw.strip().splitlines()
-            if len(lines) != len(batch):
-                raise LLMServerError("The local model omitted files from its assignment response")
-            output = {}
-            for line, row in zip(lines, batch):
-                match = re.fullmatch(r'(\d+):(\d+)', line.strip())
-                if not match or int(match[1]) != row['id'] or not 0 <= int(match[2]) <= len(choices):
-                    raise LLMServerError("The local model returned an invalid file assignment")
-                if int(match[2]):
-                    output[row['rel_path']] = choices[int(match[2]) - 1]
-            return output
-
-        found = {}
-        for offset in range(0, len(files), batch_size):
-            if status_cb:
-                status_cb(f"Assigning files… {min(offset + batch_size, len(files)):,}/{len(files):,}")
-            found.update(assign(files[offset:offset + batch_size]))
-        return found
 
     def rewrite_query(self, query, status_cb=None, cancelled=None, today=None):
         """Turn a request into a semantic query, keywords and explicit metadata filters."""

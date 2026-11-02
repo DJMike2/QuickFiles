@@ -84,7 +84,7 @@ static std::string quote(const std::string& value) {
 
 struct Policy {
     std::vector<std::wregex> exclude;
-    std::vector<std::wstring> blocked, markers;
+    std::vector<std::wstring> blocked;
     std::unordered_set<std::wstring> filing;
     bool restricted = false;
 } policy;
@@ -119,7 +119,6 @@ static void read_policy(const std::string& filename) {
         }
         else if (key == "restrict" && value == "1") policy.restricted = true;
         else if (key == "filing") policy.filing.insert(normalized_path(wide(value)));
-        else if (key == "marker") policy.markers.push_back(wide(value));
         else throw std::runtime_error("Unknown scanner policy field");
     }
 }
@@ -164,14 +163,6 @@ static bool blocked(std::wstring path) {
 #endif
     for (const auto& base : policy.blocked)
         if (path == base || (path.size() > base.size() && path.compare(0, base.size(), base) == 0 && path[base.size()] == L'/')) return true;
-    return false;
-}
-static bool marker(const std::wstring& name) {
-    for (const auto& item : policy.markers) if (name == item) return true;
-    for (const auto* suffix : {L".sln", L".csproj"}) {
-        std::wstring s(suffix);
-        if (name.size() >= s.size() && name.compare(name.size() - s.size(), s.size(), s) == 0) return true;
-    }
     return false;
 }
 
@@ -283,7 +274,7 @@ static bool list_directory(const Task& task, std::vector<Item>& items) {
         }
         // Avoid metadata work for files that the policy already excludes.
         if (entry->d_type != DT_DIR && (excluded(item.name) || !valid_name(item.name) || protected_name(item.name))) {
-            // Project detection still needs every child name, including hidden markers.
+            // Keep excluded names available without reading their metadata.
             item.regular = false;
             items.push_back(std::move(item));
             continue;
@@ -338,13 +329,8 @@ static void process(const Task& task, std::string& buffer) {
     bool ok = list_directory(task, items);
     if (!ok) ++errors;
     if (!task.relative.empty()) {
-        bool project = !ok || (!policy.restricted && folded(task.relative.substr(task.relative.find_last_of(L'/') + 1)) == L"issetupprerequisites");
-        for (const auto& item : items) if (!policy.restricted && marker(item.name)) {
-            project = true;
-            break;
-        }
-        directory_record(project ? 'P' : 'D', task, buffer);
-        if (project) return;
+        directory_record(ok ? 'D' : 'P', task, buffer);
+        if (!ok) return;
     } else if (!ok) throw std::runtime_error("Cannot read selected folder");
     for (const auto& item : items) {
         if (output_failed) return;
