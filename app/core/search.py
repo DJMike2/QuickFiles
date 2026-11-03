@@ -43,16 +43,9 @@ SCAN_TEXT_CHARS = 40
 # READ_CHUNK walked files.
 READERS = 4
 READ_CHUNK = 64
-# Keywords at least this long also match longer words ("promo" -> promotional, "japan" -> japanese).
-PREFIX_LETTERS = 5
 # Words that take a number without naming anything ("last 3 days", "over 2 GB", "top 5").
 QUANTITY_WORDS = set('''last past next over under than top first around within before after since
     more less least most bigger smaller larger'''.split())
-# Keywords this generic match nearly every file, so they carry no signal.
-GENERIC_WORDS = set('''a an the my me i we our your of and or for in on at to from by with about all any
-    some this that these those it is are was be have has where which what find show get give list
-    want need looking look search file files folder document documents stuff thing things
-    note notes record records info paper papers'''.split())
 # Common filename abbreviations, so "lecture" finds Lec14.pdf and "homework" finds HW6.pdf.
 ABBREVIATIONS = {'hw': 'homework', 'hws': 'homework', 'lec': 'lecture', 'lect': 'lecture',
                  'sol': 'solution', 'sols': 'solutions', 'soln': 'solution', 'solns': 'solutions',
@@ -88,8 +81,6 @@ def keyword_pattern(keyword):
     # except after a trailing number: "homework 2" must not match "homework 21".
     if parts[-1].isdigit():
         end = r'(?!\d)'
-    elif len(parts[-1]) >= PREFIX_LETTERS:
-        end = r'[^\W\d_]*'
     else:
         end = r'(?:e?s)?(?![^\W\d_])'
     return re.compile(rf'(?<![^\W\d_]){body}{end}')
@@ -428,7 +419,7 @@ class FileSearch:
         vector /= max(float(np.linalg.norm(vector)), 1e-12)
         matrix = np.stack([np.frombuffer(row['vector'], dtype='<f4') for row in candidates])
         scores = matrix @ vector
-        noise = GENERIC_WORDS | set(SEARCH_KINDS)
+        noise = set(SEARCH_KINDS)
         if request['extensions']:
             # The format is already enforced; otherwise "cpp" may pick C++ out of all code.
             noise |= {x.lstrip('.') for extensions in SEARCH_KINDS.values() for x in extensions}
