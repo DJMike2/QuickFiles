@@ -1,20 +1,17 @@
 """One local model server for organization, search and image descriptions."""
-from datetime import date
 import json
 import logging
-import re
 
 from app.ai.llm_server import ContextTooLargeError, IncompleteResponseError, LLMServer, LLMServerError
 from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.evidence import compact, literal_passages
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
-from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_QUERY_PROMPT, SEARCH_REVIEW_PROMPT,
+from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_REVIEW_PROMPT,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
                             MATCH_PROMPT, REVIEW_PROMPT)
-from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
+from app.ai.search_query import rewrite_search
 
-SEARCH_SORTS = ['relevance', 'newest', 'oldest', 'largest', 'smallest']
 PARALLEL_VRAM_GB = 7.5
 log = logging.getLogger(__name__)
 
@@ -24,19 +21,6 @@ def _split_existing(rows, existing):
     return len(existing) > 1 and (len(rows) <= 2 or
         len(json.dumps(existing, ensure_ascii=False).encode('utf-8')) >
         len(json.dumps(rows, ensure_ascii=False).encode('utf-8')))
-
-
-# A small model fills optional fields eagerly, so each filter is kept only when the
-# request itself contains words that could have asked for it.
-ASKS_FOR_TIME = re.compile(
-    r'\b(today|yesterday|recent\w*|latest|newest|oldest|ago|since|before|after|until|last|this|past|'
-    r'days?|weeks?|weekend|months?|years?|jan\w*|feb\w*|mar\w*|apr\w*|may|june?|july?|aug\w*|'
-    r'sep\w*|oct\w*|nov\w*|dec\w*|spring|summer|fall|autumn|winter|(19|20)\d\d)\b', re.I)
-ASKS_TO_EXCLUDE = re.compile(r"\b(not|no|without|except|excluding|exclude|other than|minus|skip|ignore|"
-                             r"don'?t|non)\b", re.I)
-ASKS_FOR_SIZE = re.compile(r'\d\s*(k|m|g|t)i?b?\b|\b(bytes?|kb|mb|gb|tb)\b', re.I)
-ASKS_FOR_ORDER = re.compile(r'\b(latest|newest|recent\w*|oldest|earliest|first|last|largest|biggest|'
-                            r'smallest|tiniest|big+\w*|large\w*|huge|small\w*|order|sort\w*)\b', re.I)
 
 
 class AIRuntime(ModelRuntime):
@@ -353,71 +337,14 @@ class AIRuntime(ModelRuntime):
             return held('Independent review returned an incomplete or invalid judgment')
 
     def rewrite_query(self, query, status_cb=None, cancelled=None, today=None):
-        """Turn a request into a semantic query, keywords and explicit metadata filters."""
-        def strings(items, length):
-            return {'type': 'array', 'maxItems': items, 'items': {'type': 'string', 'maxLength': length}}
-        schema = {'type': 'object', 'additionalProperties': False, 'properties': {
-            'query': {'type': 'string', 'maxLength': 240},
-            'keywords': strings(8, 32),
-            'kinds': {'type': 'array', 'maxItems': 4, 'items': {'enum': sorted(SEARCH_KINDS)}},
-            'extensions': strings(4, 12), 'exclude_extensions': strings(4, 12), 'exclude_terms': strings(4, 48),
-            'min_size_mb': {'type': 'number'}, 'max_size_mb': {'type': 'number'},
-            'modified_after': {'type': 'string', 'maxLength': 10},
-            'modified_before': {'type': 'string', 'maxLength': 10},
-            'sort': {'enum': SEARCH_SORTS},
-        }}
-        # Filters are optional so a plain topic search does not spend tokens writing empty fields.
-        schema['required'] = ['query', 'keywords']
-        defaults = {'kinds': [], 'extensions': [], 'exclude_extensions': [], 'exclude_terms': [],
-                    'min_size_mb': 0., 'max_size_mb': 0., 'modified_after': '', 'modified_before': '',
-                    'sort': 'relevance'}
-        today = today or date.today()
         settings = self.model_manager.search_settings
+
+        def generate(system, user, **kwargs):
+            return self._generate(system, user, status_cb, cancelled, **kwargs)
+
         try:
-            user = json.dumps({'today': f'{today:%Y-%m-%d (%A)}', 'request': query}, ensure_ascii=False)
-            raw = self._generate(SEARCH_QUERY_PROMPT, user, status_cb, cancelled, schema=schema,
-                                 max_tokens=settings['max_tokens'], temperature=settings['temperature'])
-            value = json.loads(raw)
-            if not isinstance(value, dict) or not isinstance(value.get('query'), str):
-                raise ValueError('Missing rewritten query')
-            value = {**defaults, **value}
-            for key in ('keywords', 'kinds', 'extensions', 'exclude_extensions', 'exclude_terms'):
-                if not isinstance(value.get(key), list) or any(not isinstance(x, str) for x in value[key]):
-                    raise ValueError('Invalid query filters')
-            for key in ('extensions', 'exclude_extensions'):
-                value[key] = [('.' + x.lstrip('.')).lower() for x in value[key]
-                              if re.fullmatch(r'\.?[a-zA-Z0-9]{1,10}', x)]
-            value['query'] = value['query'].strip()[:240]
-            value['keywords'] = list(dict.fromkeys(x.casefold().strip() for x in value['keywords'] if x.strip()))
-            value['kinds'] = [x for x in value['kinds'] if x in SEARCH_KINDS]
-            value['exclude_terms'] = [x.casefold().strip() for x in value['exclude_terms'] if x.strip()]
-            for key in ('min_size_mb', 'max_size_mb'):
-                number = value.get(key)
-                value[key] = float(number) if isinstance(number, (int, float)) and number > 0 else 0.
-            for key in ('modified_after', 'modified_before'):
-                try:
-                    value[key] = date.fromisoformat(value.get(key) or '').isoformat()
-                except (TypeError, ValueError):
-                    value[key] = ''  # Unparseable dates are dropped rather than guessed.
-            if value.get('sort') not in SEARCH_SORTS or not ASKS_FOR_ORDER.search(query):
-                value['sort'] = 'relevance'
-            if not ASKS_FOR_TIME.search(query):
-                value['modified_after'] = value['modified_before'] = ''
-            if not ASKS_FOR_SIZE.search(query):
-                value['min_size_mb'] = value['max_size_mb'] = 0.
-            wanted = set(value['keywords']) | set(re.findall(r'\w+', value['query'].casefold()))
-            value['exclude_terms'] = [x for x in value['exclude_terms'] if x not in wanted]
-            if not ASKS_TO_EXCLUDE.search(query):
-                value['exclude_terms'], value['exclude_extensions'] = [], []
-            # A kind or format becomes a hard filter only when the request names it;
-            # "lecture slides" must not lose its PDFs to a guessed "presentation" kind.
-            said = {word[:-1] if len(word) > 3 and word.endswith('s') else word
-                    for word in re.findall(r'[\w+]+', query.casefold())}
-            value['kinds'] = [kind for kind in value['kinds'] if SEARCH_KIND_WORDS[kind] & said]
-            value['extensions'] = [extension for extension in value['extensions'] if extension[1:] in said
-                                   or any(SEARCH_KIND_WORDS[kind] & said for kind, extensions
-                                          in SEARCH_KINDS.items() if extension in extensions)]
-            return value
+            return rewrite_search(generate, query, today=today, workers=self.slots,
+                                  max_tokens=settings['max_tokens'], temperature=settings['temperature'])
         except (ValueError, KeyError, TypeError) as exc:
             self.shutdown()
             raise LLMServerError('The local model returned an invalid search request') from exc
@@ -426,7 +353,7 @@ class AIRuntime(ModelRuntime):
             raise
 
     def review_results(self, query, files, status_cb=None, cancelled=None):
-        """Final check of retrieved files against the request as typed; returns the keys to show."""
+        # Check retrieved subjects against the resolved request; return the keys to show.
         if not files:
             return set()
         try:
