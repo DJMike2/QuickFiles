@@ -24,8 +24,8 @@ log = logging.getLogger(__name__)
 SKIP_DIRECTORIES = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', 'build', 'dist'}
 # Bump when the indexed document format changes so cached vectors are rebuilt.
 INDEX_FORMAT = 'map2'
-# Refresh PDF excerpts after reader changes without rebuilding other file types.
-PDF_TEXT_VERSION = '+pdf1'
+# Refresh PDF text and routing after changes without rebuilding other file types.
+PDF_TEXT_VERSION = '+pdf2'
 # Minimum hybrid score for a match; a kind or format filter already vouches for every
 # candidate, so less meaning evidence is needed then ("python scripts about parsing").
 MATCH_SCORE = .48
@@ -37,8 +37,6 @@ EXPANSION_WEIGHT = .6
 RELATIVE_MARGIN = .30
 # The final review sees this much of each file's text.
 REVIEW_EXCERPT = 600
-# A PDF with less extractable text than this has no real text layer: it is a scan.
-SCAN_TEXT_CHARS = 40
 # New files are read this many at a time (PDF text comes from a slow subprocess), in chunks of
 # READ_CHUNK walked files.
 READERS = 4
@@ -119,14 +117,11 @@ def identifiers(terms):
     return found
 
 
-def visual_kind(extension, text=''):
-    # Select image input for media without readable text.
+def visual_kind(extension):
     if extension in SEARCH_KINDS['image']:
         return 'image'
     if extension in SEARCH_KINDS['video']:
         return 'video'
-    if extension == '.pdf' and len(text.strip()) < SCAN_TEXT_CHARS:
-        return 'scan'
     return None
 
 
@@ -151,7 +146,7 @@ class FileSearch:
         return f'{self.embeddings.fingerprint}:{INDEX_FORMAT}'
 
     def _described(self, vision):
-        # Refresh descriptions when the shared model, projector or image prompts change.
+        # Version descriptions and PDF routing against the shared model and image settings.
         return f'{self.encoder}+vision:{vision.fingerprint}'
 
     def _reusable(self, old, extension, vision, described):
@@ -162,7 +157,7 @@ class FileSearch:
             encoder = encoder.removesuffix(PDF_TEXT_VERSION)
         if encoder == self.encoder:
             # Describe previously undescribed media when image support becomes available.
-            return not (vision and visual_kind(extension, old['text']))
+            return not (vision and (extension == '.pdf' or visual_kind(extension)))
         # Keep descriptions while AI is unavailable; refresh them when its fingerprint changes.
         return encoder.startswith(self.encoder + '+vision:') and described in (None, encoder)
 
@@ -273,7 +268,12 @@ class FileSearch:
                     if isinstance(text, Exception):
                         raise text
                     row = {'path': relative, 'mtime_ns': found.st_mtime_ns, 'size': found.st_size, 'text': text}
-                    kind = vision and visual_kind(entry.extension, text)
+                    kind = vision and visual_kind(entry.extension)
+                    if vision and entry.extension == '.pdf':
+                        if vision.needs_pdf_image(entry.abs_path, text, status, cancelled):
+                            kind = 'scan'
+                        else:
+                            row['encoder'] = described  # Cache successful text-only routing too.
                     if kind:
                         visual.append({**row, 'kind': kind})  # Described after the walk, with progress.
                         continue
