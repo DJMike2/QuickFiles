@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from itertools import islice
 import fnmatch
 import logging
 import os
@@ -81,11 +82,20 @@ class FolderAuthorization:
         self.check(destination)
 
 
-def folder_evidence(path, cancelled, include=None):
+def folder_evidence(path, cancelled, include=None, *, entry_limit=None):
     if path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction()):
         raise ValueError('Folder became a link')
-    names = sorted(path.iterdir())
-    metadata, lines, layout = [], [f'Folder: {path.name}', f'Direct entries: {len(names)}'], []
+    def entries(directory, limit):
+        with os.scandir(directory) as listing:
+            return sorted(Path(entry.path) for entry in islice(listing, limit))
+
+    names = entries(path, entry_limit + 1 if entry_limit is not None else None)
+    truncated = entry_limit is not None and len(names) > entry_limit
+    if truncated:
+        names = names[:entry_limit]
+    metadata = [('folder', *identity(path.stat()))] if entry_limit is not None else []
+    count = f'{len(names)} or more (sampled)' if truncated else str(len(names))
+    lines, layout = [f'Folder: {path.name}', f'Direct entries: {count}'], []
     preview_count = 0
     for index, entry in enumerate(names):
         if cancelled():
@@ -99,9 +109,11 @@ def folder_evidence(path, cancelled, include=None):
         except ValueError:
             continue
         if entry.is_dir():
-            children = sorted(child for child in entry.iterdir() if include is None or include(child))
+            children = [child for child in entries(entry, 9 if entry_limit is not None else None)
+                        if include is None or include(child)]
             metadata.append((entry.name, [(child.name, *identity(child.lstat())) for child in children]))
-            line = f'Directory {entry.name}/ ({len(children)} children): ' + ', '.join(
+            sampled = ' or more (sampled)' if entry_limit is not None and len(children) >= 9 else ''
+            line = f'Directory {entry.name}/ ({len(children)}{sampled} children): ' + ', '.join(
                 child.name + ('/' if child.is_dir() else '') for child in children[:8])
         elif entry.is_file():
             kind = kind_of(FileEntry('', entry.name, entry.suffix.lower(), str(entry)))

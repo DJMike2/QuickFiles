@@ -18,10 +18,10 @@ from app.ai.llm_server import LLMServerError
 from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
 from app.core.blocked_paths import checked_read_path, resolve_safe, validate_root_selection, walk_read_check
 from app.core.inventory import FileEntry
+from app.core.search_scope import SearchScope
 
 log = logging.getLogger(__name__)
 
-SKIP_DIRECTORIES = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', 'build', 'dist'}
 # Bump when the indexed document format changes so cached vectors are rebuilt.
 INDEX_FORMAT = 'map2'
 # Refresh PDF excerpts after reader changes without rebuilding other file types.
@@ -216,6 +216,7 @@ class FileSearch:
         current, pending, visual = [], [], []
         seen = set()
         skipped = 0
+        scope = None
         vision = self.vision if self.vision is not None and self.vision.available else None
         described = self._described(vision) if vision else None
 
@@ -245,7 +246,7 @@ class FileSearch:
             pending.clear()
 
         def excluded(name):
-            return name.startswith('.') or any(fnmatch.fnmatch(name, p) for p in self.exclude_patterns)
+            return any(fnmatch.fnmatch(name, p) for p in self.exclude_patterns)
 
         def read(entry):
             try:
@@ -287,6 +288,10 @@ class FileSearch:
             walked.clear()
 
         may_read = walk_read_check(root)
+
+        def include(path):
+            return not excluded(path.name) and may_read(path.relative_to(root).as_posix(), str(path))
+
         folders = {str(root): ''}  # Each entered folder's path below the root.
         try:
             for directory, directories, files in os.walk(root, followlinks=False):
@@ -294,16 +299,23 @@ class FileSearch:
                 below = folders.pop(directory)
                 allowed = []
                 for name in sorted(directories):
-                    if excluded(name) or name in SKIP_DIRECTORIES:
+                    if excluded(name):
                         continue
                     path = os.path.join(directory, name)
                     if may_read(below + name, path):
-                        folders[path] = below + name + '/'
                         allowed.append(name)
+                if allowed:
+                    if scope is None:
+                        scope = SearchScope(self.runtime, self.database_path.with_suffix('.scope.sqlite3'),
+                                            status, cancelled)
+                    paths = [Path(directory) / name for name in allowed]
+                    allowed = [path.name for path in scope.allowed(paths, include)]
+                    for name in allowed:
+                        folders[os.path.join(directory, name)] = below + name + '/'
                 directories[:] = allowed
                 for name in sorted(files):
                     check()
-                    if excluded(name):
+                    if name.startswith('.') or excluded(name):
                         continue
                     try:
                         relative, path = below + name, os.path.join(directory, name)
@@ -358,6 +370,8 @@ class FileSearch:
         connection.executemany('DELETE FROM search_files WHERE root=? AND path=?',
                                [(str(root), path) for path in removed])
         connection.commit()
+        if scope is not None:
+            log.info('Search scope: requests=%d cached=%d deferred=%d', scope.calls, scope.cached, scope.deferred)
         return current, skipped
 
     @staticmethod
