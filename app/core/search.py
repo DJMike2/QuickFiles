@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date
 import fnmatch
+import json
 import logging
 import os
 from pathlib import Path
@@ -525,10 +526,12 @@ class FileSearch:
                 shown.append((score, row, path))
         reviewed = len(shown) if shown and not metadata_only else 0
         if reviewed:
-            # Retrieval is recall-oriented; the model makes the final call against the request as typed.
+            # Metadata was already applied; review only the resolved subject and exclusions.
             status('Checking which matches fit your request…')
             try:
-                kept = self.runtime.review_results(original, [self._candidate(row) for _, row, _ in shown],
+                review_request = json.dumps({'subject': topic, 'exclude_terms': request['exclude_terms']},
+                                            ensure_ascii=False)
+                kept = self.runtime.review_results(review_request, [self._candidate(row) for _, row, _ in shown],
                                                    status, cancelled)
                 shown = [item for item in shown if item[1]['path'] in kept]
             except LLMServerError:
