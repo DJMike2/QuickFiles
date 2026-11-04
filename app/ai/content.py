@@ -50,6 +50,30 @@ def _pdfium_text(path, pages, *, cancelled=None):
     return ' '.join(chunks)[:limit]
 
 
+def pdf_layout(path, *, cancelled=None):
+    # Inspect the same first three pages used for search excerpts, without rendering them.
+    import pypdfium2.raw as raw
+    images, shapes, coverage = 0, 0, 0.
+    with pdf_document(path, cancelled=cancelled) as document:
+        for index in range(min(3, len(document))):
+            _check_cancelled(cancelled)
+            with closing(document[index]) as page:
+                width, height = page.get_size()
+                image_area = 0.
+                for obj in page.get_objects():
+                    _check_cancelled(cancelled)
+                    if obj.type == raw.FPDF_PAGEOBJ_IMAGE:
+                        images += 1
+                        left, bottom, right, top = obj.get_bounds()
+                        image_area += (max(0., min(width, right) - max(0., left)) *
+                                       max(0., min(height, top) - max(0., bottom)))
+                    elif obj.type in (raw.FPDF_PAGEOBJ_PATH, raw.FPDF_PAGEOBJ_SHADING):
+                        shapes += 1
+                coverage = max(coverage, min(1., image_area / max(width * height, 1.)))
+    _check_cancelled(cancelled)
+    return {'images': images, 'shapes': shapes, 'image_coverage': coverage}
+
+
 def _pdf_text(path, pages=1, *, cancelled=None):
     _check_cancelled(cancelled)
     if shutil.which("pdftotext"):
