@@ -440,9 +440,8 @@ class FileSearch:
         expansions = own_terms(topic, noise) + [k for k in request.get('keywords', []) if k not in noise]
         extra = [p for p in map(keyword_pattern, dict.fromkeys(expansions)) if p]
         # Kind words ("photos", "img") describe the format, not what a photo shows.
-        kind_words = set().union(*SEARCH_KIND_WORDS.values())
         topical = [p for term in dict.fromkeys(terms + expansions)
-                   if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
+                   if ABBREVIATIONS.get(term, term).removesuffix('s') not in SEARCH_KIND_WORDS
                    and (p := keyword_pattern(term))]
         eligible = np.ones(len(candidates), dtype=bool)
         carries = np.zeros(len(candidates), dtype=bool)
