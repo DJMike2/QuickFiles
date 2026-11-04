@@ -7,7 +7,7 @@ from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.evidence import compact, literal_passages
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
-from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_REVIEW_PROMPT,
+from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_REVIEW_PROMPT, SEARCH_SCOPE_PROMPT, SEARCH_SCOPE_ROLES,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
                             MATCH_PROMPT, REVIEW_PROMPT)
 from app.ai.search_query import rewrite_search
@@ -72,7 +72,7 @@ class AIRuntime(ModelRuntime):
         raw = server.chat(system, user, max_tokens or settings["max_tokens"],
                                 settings["temperature"] if temperature is None else temperature,
                                 schema=schema, grammar=grammar,
-                                check_context=system in (GROUPS_PROMPT, REVIEW_PROMPT))
+                                check_context=system in (GROUPS_PROMPT, REVIEW_PROMPT, SEARCH_SCOPE_PROMPT))
         if cancelled and cancelled():
             raise InterruptedError("Planning stopped")
         return raw
@@ -102,6 +102,35 @@ class AIRuntime(ModelRuntime):
             return {'role': role, 'observation': observation}
         except (ValueError, TypeError, KeyError, IndexError) as error:
             raise LLMServerError('The local model returned an invalid folder classification') from error
+
+    def describe_search_folders(self, evidence, status_cb=None, cancelled=None):
+        if not evidence:
+            return []
+        properties = {'id': {'enum': list(range(1, len(evidence) + 1))},
+            'observation': {'type': 'string', 'maxLength': 120},
+            'role': {'enum': list(SEARCH_SCOPE_ROLES)}}
+        schema = {'type': 'object', 'additionalProperties': False, 'required': ['folders'],
+            'properties': {'folders': {'type': 'array', 'minItems': len(evidence), 'maxItems': len(evidence),
+                'items': {'type': 'object', 'additionalProperties': False,
+                          'required': list(properties), 'properties': properties}}}}
+        user = json.dumps({'folders': [{'id': index, 'evidence': text}
+                                      for index, text in enumerate(evidence, 1)]})
+        raw = self._generate(SEARCH_SCOPE_PROMPT, user, status_cb, cancelled, schema=schema,
+                             max_tokens=96 * len(evidence), temperature=0)
+        try:
+            values = json.loads(raw)['folders']
+            if (not isinstance(values, list) or len(values) != len(evidence)
+                    or any(not isinstance(row, dict) or type(row.get('id')) is not int for row in values)
+                    or {row['id'] for row in values} != set(range(1, len(evidence) + 1))):
+                raise ValueError('Incomplete search folder classification')
+            for row in values:
+                if (row.get('role') not in properties['role']['enum']
+                        or not isinstance(row.get('observation'), str) or not row['observation'].strip()
+                        or len(row['observation']) > 120):
+                    raise ValueError('Invalid search folder classification')
+            return sorted(values, key=lambda row: row['id'])
+        except (ValueError, TypeError, KeyError) as error:
+            raise LLMServerError('The local model returned an invalid search folder classification') from error
 
     def profile_items(self, rows, status_cb=None, cancelled=None):
         """Small batches retain every file; context overflow splits instead of sampling away files."""
