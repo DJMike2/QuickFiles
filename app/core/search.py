@@ -32,9 +32,6 @@ MATCH_SCORE = .48
 FILTERED_MATCH_SCORE = .32
 # Keyword evidence from the model's synonyms counts less than the user's own words.
 EXPANSION_WEIGHT = .6
-# Matches far below the best one are a different subject that merely shares words or a field;
-# the final review judges the rest, so this only trims clear outliers.
-RELATIVE_MARGIN = .30
 # The final review sees this much of each file's text.
 REVIEW_EXCERPT = 600
 # New files are read this many at a time (PDF text comes from a slow subprocess), in chunks of
@@ -433,11 +430,8 @@ class FileSearch:
         topical = [p for term in dict.fromkeys(terms + expansions)
                    if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
                    and (p := keyword_pattern(term))]
-        typed = [p for term in terms if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
-                 and (p := keyword_pattern(term))]
         eligible = np.ones(len(candidates), dtype=bool)
         carries = np.zeros(len(candidates), dtype=bool)
-        titled = np.zeros(len(candidates), dtype=bool)
         for index, row in enumerate(candidates):
             path = Path(row['path'])
             fields = ((readable(path.stem) + ' ' + path.suffix[1:]).casefold(),
@@ -453,19 +447,16 @@ class FileSearch:
             in_name = sum(1 for p in own if p.search(fields[0]) or p.search(fields[1]))
             scores[index] += .12 * in_name / max(len(own), 1)
             carries[index] = bool(named) and all(any(p.search(field) for field in fields) for p in named)
-            titled[index] = bool(typed) and all(p.search(fields[0]) or p.search(fields[1]) for p in typed)
             # A file without readable text can only match through its name or folder.
             if not row['text'].strip() and not any(p.search(fields[0]) or p.search(fields[1]) for p in topical):
                 eligible[index] = False
         if carries.any():
             eligible &= carries  # The request names it (stat 415, homework 2); others are other files.
         floor = FILTERED_MATCH_SCORE if request.get('kinds') or request['extensions'] else MATCH_SCORE
-        threshold = max(floor, float(scores[eligible].max()) - RELATIVE_MARGIN) if eligible.any() else floor
         for index in np.argsort(-scores):
             if scores[index] < floor:
                 break
-            # A file named for everything the user typed ("resumes" -> X_Resume.pdf) is never an outlier.
-            if eligible[index] and (scores[index] >= threshold or titled[index]):
+            if eligible[index]:
                 ranked.append((min(1., float(scores[index])), candidates[index]))
         if ranked and not named:
             # Files beside a match, in a folder named for the request (Travel/, Health/), go to the
