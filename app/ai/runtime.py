@@ -72,7 +72,7 @@ class AIRuntime(ModelRuntime):
         raw = server.chat(system, user, max_tokens or settings["max_tokens"],
                                 settings["temperature"] if temperature is None else temperature,
                                 schema=schema, grammar=grammar,
-                                check_context=system in (GROUPS_PROMPT, REVIEW_PROMPT, SEARCH_SCOPE_PROMPT))
+                                check_context=system in (GROUPS_PROMPT, MATCH_PROMPT, REVIEW_PROMPT, SEARCH_SCOPE_PROMPT))
         if cancelled and cancelled():
             raise InterruptedError("Planning stopped")
         return raw
