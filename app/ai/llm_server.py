@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -51,6 +52,8 @@ class LLMServer:
         self._process = None
         self._output = None
         self._interrupted = threading.Event()
+        self._context_condition = threading.Condition()
+        self._context_in_use = 0
         self.port = 0
         self.backend = "cpu"
 
@@ -169,13 +172,14 @@ class LLMServer:
         if grammar is not None:
             payload["grammar"] = grammar
         try:
-            # Small text requests need no extra round trip. Larger ones use the
-            # engine's tokenizer and chat template, including the output allowance.
+            reserved = 0
+            # Shared requests need exact counts; a byte bound keeps short single-slot calls cheap.
             if check_context:
                 budget = self.settings['context_tokens'] - max_tokens - 32
                 if budget <= 0:
                     raise ContextTooLargeError('Request exceeds the local model context budget')
-                if len((system + user).encode('utf-8')) + 256 > budget:
+                shared = self.settings.get('parallel', 1) > 1
+                if shared or len((system + user).encode('utf-8')) + 256 > budget:
                     count = self._request('chat/completions/input_tokens', payload)['input_tokens']
                     if type(count) is not int or count < 0:
                         raise ValueError('Invalid input token count')
@@ -183,7 +187,10 @@ class LLMServer:
                         raise InterruptedError('AI request stopped')
                     if count > budget:
                         raise ContextTooLargeError('Request exceeds the local model context budget')
-            choice = self._request("chat/completions", payload)["choices"][0]
+                    if shared:
+                        reserved = count + max_tokens + 32
+            with self._reserve_context(reserved):
+                choice = self._request("chat/completions", payload)["choices"][0]
             if choice.get("finish_reason") == "length" and allow_truncated and choice["message"].get("content"):
                 return choice["message"]["content"]
             if choice.get("finish_reason") == "length":
@@ -198,6 +205,26 @@ class LLMServer:
             return content
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise LLMServerError(f"Invalid local AI response: {exc}") from exc
+
+    @contextmanager
+    def _reserve_context(self, tokens):
+        if not tokens:
+            yield
+            return
+        # Concurrent requests share one KV pool, including their output allowance.
+        with self._context_condition:
+            while (not self._interrupted.is_set()
+                   and self._context_in_use + tokens > self.settings['context_tokens']):
+                self._context_condition.wait(0.1)
+            if self._interrupted.is_set():
+                raise InterruptedError('AI request stopped')
+            self._context_in_use += tokens
+        try:
+            yield
+        finally:
+            with self._context_condition:
+                self._context_in_use -= tokens
+                self._context_condition.notify_all()
 
     def embed(self, texts):
         if self._interrupted.is_set():
@@ -225,7 +252,10 @@ class LLMServer:
             if self._interrupted.is_set():
                 raise InterruptedError("AI request stopped") from exc
             detail = exc.read(4096).decode(errors="replace")
-            if exc.code == 400 and any(word in detail.lower() for word in ("context", "exceed", "too large")):
+            message = detail.lower()
+            if (exc.code == 400 and any(word in message for word in ("context", "exceed", "too large"))
+                or exc.code == 500 and "context" in message
+                and any(word in message for word in ("exceed", "too large", "too long"))):
                 raise ContextTooLargeError(detail) from exc
             raise LLMServerError(f"Engine HTTP {exc.code}: {detail}") from exc
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
