@@ -23,7 +23,7 @@ from app.core.search_scope import SearchScope
 log = logging.getLogger(__name__)
 
 # Bump when the indexed document format changes so cached vectors are rebuilt.
-INDEX_FORMAT = 'map2'
+INDEX_FORMAT = 'map3'
 # Refresh PDF text and routing after changes without rebuilding other file types.
 PDF_TEXT_VERSION = '+pdf2'
 # Minimum hybrid score for a match; a kind or format filter already vouches for every
@@ -41,12 +41,6 @@ READ_CHUNK = 64
 # Words that take a number without naming anything ("last 3 days", "over 2 GB", "top 5").
 QUANTITY_WORDS = set('''last past next over under than top first around within before after since
     more less least most bigger smaller larger'''.split())
-# Common filename abbreviations, so "lecture" finds Lec14.pdf and "homework" finds HW6.pdf.
-ABBREVIATIONS = {'hw': 'homework', 'hws': 'homework', 'lec': 'lecture', 'lect': 'lecture',
-                 'sol': 'solution', 'sols': 'solutions', 'soln': 'solution', 'solns': 'solutions',
-                 'asgn': 'assignment', 'assn': 'assignment', 'proj': 'project', 'ch': 'chapter',
-                 'chap': 'chapter', 'img': 'image', 'pic': 'picture', 'pics': 'pictures', 'vid': 'video',
-                 'doc': 'document', 'docs': 'documents', 'cv': 'resume', 'rpt': 'report'}
 
 
 def file_kinds(extension):
@@ -54,11 +48,9 @@ def file_kinds(extension):
 
 
 def readable(text):
-    """Split names like CMPSC473_PracticeMidterm into words; spell out abbreviations (HW2 -> homework 2)."""
+    # Split punctuation, word boundaries and numbers without guessing what abbreviations mean.
     text = re.sub(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])', ' ', text)
-    words = re.sub(r'[\W_]+', ' ', text).split()
-    spelled = [ABBREVIATIONS.get(word.lower(), word) for word in words]
-    return ' '.join(words if spelled == words else words + ['/'] + spelled)
+    return ' '.join(re.sub(r'[\W_]+', ' ', text).split())
 
 
 def keyword_pattern(keyword):
@@ -69,7 +61,7 @@ def keyword_pattern(keyword):
     # Plurals are folded, so "stats" matches STAT and "solution" matches solutions.
     parts = [part[:-1] if len(part) > 3 and part.endswith('s') and not part.endswith(('ss', 'us', 'is'))
              else part for part in parts]
-    # Numbers ignore leading zeros, so "homework 2" finds HW02.
+    # Numbers ignore leading zeros, so "hw 2" finds HW02.
     body = r'[\W_]*'.join('0*' + (part.lstrip('0') or '0') if part.isdigit() else re.escape(part)
                           for part in parts)
     # Letters may not touch the keyword (hw must not match "show") but digits may (hw6),
@@ -372,7 +364,7 @@ class FileSearch:
         high = request.get('max_size_mb', 0) * 1024 * 1024
         after = request.get('modified_after') or ''
         before = request.get('modified_before') or ''
-        # Excluded words are matched in the readable name too, so "solutions" also drops HW2_soln.
+        # Exclusions also match words separated by punctuation or number boundaries.
         excluded = [p for p in map(keyword_pattern, request['exclude_terms']) if p]
         kept = []
         for row in rows:
@@ -439,9 +431,9 @@ class FileSearch:
         named = [p for p in map(keyword_pattern, identifiers(terms)) if p]
         expansions = own_terms(topic, noise) + [k for k in request.get('keywords', []) if k not in noise]
         extra = [p for p in map(keyword_pattern, dict.fromkeys(expansions)) if p]
-        # Kind words ("photos", "img") describe the format, not what a photo shows.
+        # Kind words describe the format, not what a photo shows.
         topical = [p for term in dict.fromkeys(terms + expansions)
-                   if ABBREVIATIONS.get(term, term).removesuffix('s') not in SEARCH_KIND_WORDS
+                   if term.removesuffix('s') not in SEARCH_KIND_WORDS
                    and (p := keyword_pattern(term))]
         eligible = np.ones(len(candidates), dtype=bool)
         carries = np.zeros(len(candidates), dtype=bool)
@@ -451,8 +443,7 @@ class FileSearch:
                       readable(path.parent.as_posix()).casefold(), row['text'].casefold())
             own_hits = [sum(1 for p in own if p.search(field)) for field in fields]
             extra_hits = [sum(1 for p in extra if p.search(field)) for field in fields]
-            # Hybrid ranking: meaning from the embedding plus exact keyword evidence in the
-            # name, folder and text, which catches abbreviations (HW6) a small encoder misreads.
+            # Combine embedding similarity with keyword evidence in the name, folder and text.
             for weight, mine, theirs in zip((.22, .10, .08), own_hits, extra_hits):
                 scores[index] += weight * (1. if mine else EXPANSION_WEIGHT if theirs else 0.)
             scores[index] += .03 * min(sum(own_hits) + sum(extra_hits), 4)
