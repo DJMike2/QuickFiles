@@ -76,7 +76,7 @@ class SettingsDialog(QDialog):
         feature_column.addWidget(self.watch)
         feature_column.addWidget(_note(
             "New files in your scanned folder are sorted automatically, and you'll be told where "
-            "each one went. QuickFiles stays in the tray when closed; right-click it to quit."
+            "each one went. Keep QuickFiles running to watch for new files; closing it exits the app."
         ))
         column.addWidget(features)
         column.addStretch()

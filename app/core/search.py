@@ -1,6 +1,8 @@
 """Read-only file search: plan the request, update a local file map, retrieve, report."""
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from contextvars import copy_context
 from datetime import date
 import fnmatch
 import json
@@ -15,7 +17,7 @@ import numpy as np
 
 from app.ai.content import read_content
 from app.ai.llm_server import LLMServerError
-from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
+from app.constants import SEARCH_KINDS
 from app.core.blocked_paths import checked_read_path, resolve_safe, validate_root_selection, walk_read_check
 from app.core.inventory import FileEntry
 from app.core.search_scope import SearchScope
@@ -23,30 +25,15 @@ from app.core.search_scope import SearchScope
 log = logging.getLogger(__name__)
 
 # Bump when the indexed document format changes so cached vectors are rebuilt.
-INDEX_FORMAT = 'map2'
+INDEX_FORMAT = 'map3'
 # Refresh PDF text and routing after changes without rebuilding other file types.
 PDF_TEXT_VERSION = '+pdf2'
-# Minimum hybrid score for a match; a kind or format filter already vouches for every
-# candidate, so less meaning evidence is needed then ("python scripts about parsing").
-MATCH_SCORE = .48
-FILTERED_MATCH_SCORE = .32
-# Keyword evidence from the model's synonyms counts less than the user's own words.
-EXPANSION_WEIGHT = .6
 # The final review sees this much of each file's text.
 REVIEW_EXCERPT = 600
 # New files are read this many at a time (PDF text comes from a slow subprocess), in chunks of
 # READ_CHUNK walked files.
 READERS = 4
 READ_CHUNK = 64
-# Words that take a number without naming anything ("last 3 days", "over 2 GB", "top 5").
-QUANTITY_WORDS = set('''last past next over under than top first around within before after since
-    more less least most bigger smaller larger'''.split())
-# Common filename abbreviations, so "lecture" finds Lec14.pdf and "homework" finds HW6.pdf.
-ABBREVIATIONS = {'hw': 'homework', 'hws': 'homework', 'lec': 'lecture', 'lect': 'lecture',
-                 'sol': 'solution', 'sols': 'solutions', 'soln': 'solution', 'solns': 'solutions',
-                 'asgn': 'assignment', 'assn': 'assignment', 'proj': 'project', 'ch': 'chapter',
-                 'chap': 'chapter', 'img': 'image', 'pic': 'picture', 'pics': 'pictures', 'vid': 'video',
-                 'doc': 'document', 'docs': 'documents', 'cv': 'resume', 'rpt': 'report'}
 
 
 def file_kinds(extension):
@@ -54,11 +41,9 @@ def file_kinds(extension):
 
 
 def readable(text):
-    """Split names like CMPSC473_PracticeMidterm into words; spell out abbreviations (HW2 -> homework 2)."""
+    # Split punctuation, word boundaries and numbers without guessing what abbreviations mean.
     text = re.sub(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])', ' ', text)
-    words = re.sub(r'[\W_]+', ' ', text).split()
-    spelled = [ABBREVIATIONS.get(word.lower(), word) for word in words]
-    return ' '.join(words if spelled == words else words + ['/'] + spelled)
+    return ' '.join(re.sub(r'[\W_]+', ' ', text).split())
 
 
 def keyword_pattern(keyword):
@@ -69,7 +54,7 @@ def keyword_pattern(keyword):
     # Plurals are folded, so "stats" matches STAT and "solution" matches solutions.
     parts = [part[:-1] if len(part) > 3 and part.endswith('s') and not part.endswith(('ss', 'us', 'is'))
              else part for part in parts]
-    # Numbers ignore leading zeros, so "homework 2" finds HW02.
+    # Numbers ignore leading zeros, so "hw 2" finds HW02.
     body = r'[\W_]*'.join('0*' + (part.lstrip('0') or '0') if part.isdigit() else re.escape(part)
                           for part in parts)
     # Letters may not touch the keyword (hw must not match "show") but digits may (hw6),
@@ -81,28 +66,16 @@ def keyword_pattern(keyword):
     return re.compile(rf'(?<![^\W\d_]){body}{end}')
 
 
-def own_terms(text, noise):
+def own_terms(text):
     """The user's own words, keeping a number with the word before it ("homework 2", "lab 4")."""
     words = re.findall(r'[^\W\d_]+|\d+', text.casefold())
     terms = []
     for index, word in enumerate(words):
         if word.isdigit() and terms and words[index - 1] == terms[-1]:
             terms[-1] += ' ' + word
-        elif word not in noise:
+        else:
             terms.append(word)
     return list(dict.fromkeys(terms))
-
-
-def identifiers(terms):
-    """Numbered names the user typed (stat 415, homework 2, 1099); years and quantities are not names."""
-    found = []
-    for term in terms:
-        word, _, number = term.rpartition(' ')
-        if not number.isdigit() or word in QUANTITY_WORDS or re.fullmatch(r'(19|20)\d\d', number):
-            continue
-        if word or len(number) >= 3:
-            found.append(term)
-    return found
 
 
 def visual_kind(extension):
@@ -372,7 +345,7 @@ class FileSearch:
         high = request.get('max_size_mb', 0) * 1024 * 1024
         after = request.get('modified_after') or ''
         before = request.get('modified_before') or ''
-        # Excluded words are matched in the readable name too, so "solutions" also drops HW2_soln.
+        # Exclusions also match words separated by punctuation or number boundaries.
         excluded = [p for p in map(keyword_pattern, request['exclude_terms']) if p]
         kept = []
         for row in rows:
@@ -425,65 +398,47 @@ class FileSearch:
 
     @staticmethod
     def _rank_candidates(candidates, original, request, topic, queries):
-        ranked = []
-        vector = .75 * queries[0] + .25 * queries[1]
-        vector /= max(float(np.linalg.norm(vector)), 1e-12)
-        matrix = np.stack([np.frombuffer(row['vector'], dtype='<f4') for row in candidates])
-        scores = matrix @ vector
-        noise = set(SEARCH_KINDS)
-        if request['extensions']:
-            # The format is already enforced; otherwise "cpp" may pick C++ out of all code.
-            noise |= {x.lstrip('.') for extensions in SEARCH_KINDS.values() for x in extensions}
-        terms = own_terms(original[:1000], noise)
-        own = [p for p in map(keyword_pattern, terms) if p]
-        named = [p for p in map(keyword_pattern, identifiers(terms)) if p]
-        expansions = own_terms(topic, noise) + [k for k in request.get('keywords', []) if k not in noise]
-        extra = [p for p in map(keyword_pattern, dict.fromkeys(expansions)) if p]
-        # Kind words ("photos", "img") describe the format, not what a photo shows.
-        kind_words = set().union(*SEARCH_KIND_WORDS.values())
-        topical = [p for term in dict.fromkeys(terms + expansions)
-                   if ABBREVIATIONS.get(term, term).removesuffix('s') not in kind_words
-                   and (p := keyword_pattern(term))]
-        eligible = np.ones(len(candidates), dtype=bool)
+        terms = list(dict.fromkeys(own_terms(topic) + request.get('keywords', [])
+                                   + own_terms(original[:1000])))
+        patterns = [(term, p) for term in terms if (p := keyword_pattern(term))]
+        subject = set(request.get('subject_terms', terms))
+        named = [p for term in request['identifiers'] if (p := keyword_pattern(term))]
         carries = np.zeros(len(candidates), dtype=bool)
+        documents = []
+        lengths = np.empty(len(candidates), dtype=float)
+        frequency = Counter()
         for index, row in enumerate(candidates):
             path = Path(row['path'])
             fields = ((readable(path.stem) + ' ' + path.suffix[1:]).casefold(),
                       readable(path.parent.as_posix()).casefold(), row['text'].casefold())
-            own_hits = [sum(1 for p in own if p.search(field)) for field in fields]
-            extra_hits = [sum(1 for p in extra if p.search(field)) for field in fields]
-            # Hybrid ranking: meaning from the embedding plus exact keyword evidence in the
-            # name, folder and text, which catches abbreviations (HW6) a small encoder misreads.
-            for weight, mine, theirs in zip((.22, .10, .08), own_hits, extra_hits):
-                scores[index] += weight * (1. if mine else EXPANSION_WEIGHT if theirs else 0.)
-            scores[index] += .03 * min(sum(own_hits) + sum(extra_hits), 4)
-            # Matching more of the user's words in the name or folder means a closer match.
-            in_name = sum(1 for p in own if p.search(fields[0]) or p.search(fields[1]))
-            scores[index] += .12 * in_name / max(len(own), 1)
             carries[index] = bool(named) and all(any(p.search(field) for field in fields) for p in named)
-            # A file without readable text can only match through its name or folder.
-            if not row['text'].strip() and not any(p.search(fields[0]) or p.search(fields[1]) for p in topical):
-                eligible[index] = False
-        if carries.any():
-            eligible &= carries  # The request names it (stat 415, homework 2); others are other files.
-        floor = FILTERED_MATCH_SCORE if request.get('kinds') or request['extensions'] else MATCH_SCORE
-        for index in np.argsort(-scores):
-            if scores[index] < floor:
-                break
-            if eligible[index]:
-                ranked.append((min(1., float(scores[index])), candidates[index]))
-        if ranked and not named:
-            # Files beside a match, in a folder named for the request (Travel/, Health/), go to the
-            # review too: "japan trip" also means the flight booking that never says Japan. Not when
-            # the request names a numbered item (stat 415): the rest of its folder is something else.
-            have = {row['path'] for _, row in ranked}
-            folders = {Path(row['path']).parent for _, row in ranked} - {Path('.')}
-            named_folders = {folder for folder in folders
-                             if any(p.search(readable(folder.as_posix()).casefold()) for p in topical)}
-            ranked += [(min(1., float(scores[i])), candidates[i]) for i in np.argsort(-scores)
-                       if eligible[i] and candidates[i]['path'] not in have
-                       and Path(candidates[i]['path']).parent in named_folders]
-        return ranked
+            text = ' '.join(fields)
+            lengths[index] = len(re.findall(r'[^\W_]+', text))
+            counts = {term: len(p.findall(text)) for term, p in patterns
+                      if row['text'].strip() or term in subject}
+            counts = {term: count for term, count in counts.items() if count}
+            documents.append(counts)
+            frequency.update(counts.keys())
+        mean_length = max(float(lengths.mean()), 1.)
+        lexical = np.zeros(len(candidates))
+        for term, _ in patterns:
+            count = np.array([document.get(term, 0) for document in documents], dtype=float)
+            weight = np.log(1 + (len(candidates) - frequency[term] + .5) / (frequency[term] + .5))
+            lexical += weight * count * 2.2 / (count + 1.2 * (.25 + .75 * lengths / mean_length))
+        vector = queries.mean(axis=0)
+        vector /= max(float(np.linalg.norm(vector)), 1e-12)
+        matrix = np.stack([np.frombuffer(row['vector'], dtype='<f4') for row in candidates])
+        semantic = matrix @ vector
+        scores = np.zeros(len(candidates))
+        # Combine independent lexical and semantic rankings; the model judges meaning.
+        for values in (semantic, lexical):
+            for rank, index in enumerate(np.argsort(-values, kind='stable'), 1):
+                if values is lexical and values[index] <= 0:
+                    break
+                scores[index] += 1 / (60 + rank)
+        eligible = carries if carries.any() else np.ones(len(candidates), dtype=bool)
+        return [(float(scores[index] * 30.5), candidates[index])
+                for index in np.argsort(-scores, kind='stable') if eligible[index]]
 
     def _retrieve(self, root, original, request, rows, skipped, status, progress, cancelled):
         candidates = self._filtered(rows, request)
@@ -498,6 +453,10 @@ class FileSearch:
             ranked = [(1., row) for row in candidates]
         elif candidates:
             status('Finding matching files…')
+            if any(not row['text'].strip() for row in candidates):
+                terms = list(dict.fromkeys(own_terms(topic) + request.get('keywords', [])))
+                request = {**request, 'subject_terms': self.runtime.review_search_terms(
+                    topic, terms, status, cancelled)}
             queries = self.embeddings.embed([topic, original[:1000]], status, progress, cancelled, query=True)
             ranked = self._rank_candidates(candidates, original, request, topic, queries)
         if request.get('sort', 'relevance') != 'relevance' or metadata_only:
@@ -522,16 +481,32 @@ class FileSearch:
                 shown.append((score, row, path))
         reviewed = len(shown) if shown and not metadata_only else 0
         if reviewed:
-            # Metadata was already applied; review only the resolved subject and exclusions.
+            # Review original intent after applying the deterministic filters.
             status('Checking which matches fit your request…')
             try:
-                review_request = json.dumps({'subject': topic, 'exclude_terms': request['exclude_terms']},
+                review_request = json.dumps({'request': original, 'subject': topic,
+                                             'applied_filters': filters, 'calendar': date.today().isoformat(),
+                                             'exclude_terms': request['exclude_terms']},
                                             ensure_ascii=False)
-                kept = self.runtime.review_results(review_request, [self._candidate(row) for _, row, _ in shown],
-                                                   status, cancelled)
+                files = [{**self._candidate(row), 'size_bytes': row['size'],
+                          'modified': date.fromtimestamp(row['mtime_ns'] / 1e9).isoformat()}
+                         for _, row, _ in shown]
+                groups = [[file for file in files if bool(file['excerpt'].strip()) == readable]
+                          for readable in (True, False)]
+                batches = [group[offset:offset + 5] for group in groups
+                           for offset in range(0, len(group), 5)]
+
+                def review(batch):
+                    return self.runtime.review_results(review_request, batch, status, cancelled)
+
+                # Small packets keep the review focused; workers retain the scan's log context.
+                with ThreadPoolExecutor(min(self.runtime.slots, len(batches)), thread_name_prefix='search-review') as pool:
+                    jobs = [pool.submit(copy_context().run, review, batch) for batch in batches]
+                    kept = set().union(*(job.result() for job in jobs))
                 shown = [item for item in shown if item[1]['path'] in kept]
             except LLMServerError:
-                log.warning('Search review failed; showing unreviewed matches', exc_info=True)
+                log.warning('Search review failed', exc_info=True)
+                raise
         results = [{'id': row['path'], 'name': path.name, 'path': str(path), 'type': path.suffix.lstrip('.'),
                     'score': score, 'size_bytes': row['size'], 'modified': row['mtime_ns'] / 1e9}
                    for score, row, path in shown]

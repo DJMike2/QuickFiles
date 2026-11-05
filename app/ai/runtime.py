@@ -7,7 +7,7 @@ from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.evidence import compact, literal_passages
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
-from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_REVIEW_PROMPT, SEARCH_SCOPE_PROMPT, SEARCH_SCOPE_ROLES,
+from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_REVIEW_PROMPT, SEARCH_NAME_REVIEW_PROMPT, SEARCH_TERMS_PROMPT, SEARCH_SCOPE_PROMPT, SEARCH_SCOPE_ROLES,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
                             MATCH_PROMPT, REVIEW_PROMPT)
 from app.ai.search_query import rewrite_search
@@ -381,6 +381,29 @@ class AIRuntime(ModelRuntime):
             self.shutdown()
             raise
 
+    def review_search_terms(self, subject, terms, status_cb=None, cancelled=None):
+        if not terms:
+            return []
+        ids = ' | '.join(json.dumps(str(index)) for index in range(1, len(terms) + 1))
+        grammar = 'root ::= "[" ( id ( "," id )* )? "]"\nid ::= ' + ids
+        user = json.dumps({'subject': subject, 'terms': [
+            {'id': index, 'term': term} for index, term in enumerate(terms, 1)]}, ensure_ascii=False)
+        try:
+            raw = self._generate(SEARCH_TERMS_PROMPT, user, status_cb, cancelled, grammar=grammar,
+                                 max_tokens=3 * len(terms) + 8, temperature=0)
+            listed = json.loads(raw)
+            if not isinstance(listed, list):
+                raise ValueError('Expected subject term ids')
+            selected = {int(index) for index in listed}
+            if not selected <= set(range(1, len(terms) + 1)):
+                raise ValueError('Unknown subject term')
+            return [term for index, term in enumerate(terms, 1) if index in selected]
+        except (ValueError, TypeError) as exc:
+            raise LLMServerError('The local model returned invalid subject terms') from exc
+        except (LLMServerError, InterruptedError):
+            self.shutdown()
+            raise
+
     def review_results(self, query, files, status_cb=None, cancelled=None):
         # Check retrieved subjects against the resolved request; return the keys to show.
         if not files:
@@ -392,24 +415,55 @@ class AIRuntime(ModelRuntime):
             raise
 
     def _review_results(self, query, files, status_cb, cancelled):
-        ids = ' | '.join(json.dumps(str(index)) for index in range(1, len(files) + 1))
-        # Only candidate ids can be written, so the answer is short and always parseable.
-        grammar = 'root ::= "[" ( id ( "," id )* )? "]"\nid ::= ' + ids
+        ids = list(range(1, len(files) + 1))
+        names_only = not any(file.get('excerpt', '').strip() for file in files)
+        match_schema = {'type': 'integer', 'enum': ids}
+        if names_only:
+            match_schema = {'type': 'object', 'additionalProperties': False,
+                'required': ['id', 'field', 'quote'], 'properties': {
+                    'id': {'type': 'integer', 'enum': ids},
+                    'field': {'type': 'string', 'enum': ['name', 'folder']},
+                    'quote': {'type': 'string', 'minLength': 1, 'maxLength': 160}}}
+        schema = {'type': 'object', 'additionalProperties': False,
+            'required': ['criterion', 'matches'], 'properties': {
+                'criterion': {'type': 'string', 'minLength': 1, 'maxLength': 160},
+                'matches': {'type': 'array', 'items': match_schema}}}
         rows = [{'id': index, **{k: v for k, v in file.items() if k != 'key'}}
                 for index, file in enumerate(files, 1)]
-        user = json.dumps({'request': query[:1000], 'candidates': rows}, ensure_ascii=False, separators=(',', ':'))
+        user = json.dumps({'request': query[:2000], 'candidates': rows}, ensure_ascii=False, separators=(',', ':'))
         try:
-            raw = self._generate(SEARCH_REVIEW_PROMPT, user, status_cb, cancelled, grammar=grammar,
-                                 max_tokens=3 * len(files) + 8,
+            prompt = SEARCH_NAME_REVIEW_PROMPT if names_only else SEARCH_REVIEW_PROMPT
+            raw = self._generate(prompt, user, status_cb, cancelled, schema=schema,
+                                 max_tokens=80 + (60 if names_only else 3) * len(files),
                                  temperature=self.model_manager.search_settings['temperature'])
         except (ContextTooLargeError, IncompleteResponseError):
             if len(files) <= 1:
-                return {file['key'] for file in files}  # Retrieval already vouched for it.
+                raise
             middle = len(files) // 2
             return (self._review_results(query, files[:middle], status_cb, cancelled)
                     | self._review_results(query, files[middle:], status_cb, cancelled))
         try:
-            listed = {int(index) for index in json.loads(raw)}
+            value = json.loads(raw)
+            if (not isinstance(value, dict) or set(value) != {'criterion', 'matches'}
+                    or not isinstance(value['criterion'], str) or not value['criterion'].strip()
+                    or len(value['criterion']) > 160 or not isinstance(value['matches'], list)):
+                raise ValueError('Invalid search judgment')
+            if not names_only:
+                if any(type(index) is not int or index not in ids for index in value['matches']):
+                    raise ValueError('Invalid candidate id')
+                return {file['key'] for index, file in enumerate(files, 1) if index in value['matches']}
+            if any(not isinstance(match, dict) or set(match) != {'id', 'field', 'quote'}
+                           or type(match['id']) is not int or match['id'] not in ids
+                           or match['field'] not in ('name', 'folder')
+                           or not isinstance(match['quote'], str) or not match['quote'].strip()
+                           or len(match['quote']) > 160 for match in value['matches']):
+                raise ValueError('Invalid search judgment')
         except (ValueError, TypeError) as exc:
             raise LLMServerError('The local model returned an invalid search review') from exc
-        return {file['key'] for index, file in enumerate(files, 1) if index in listed}
+        kept = set()
+        for match in value['matches']:
+            file = files[match['id'] - 1]
+            evidence = ' '.join(match['quote'].split())
+            if evidence in ' '.join(file.get(match['field'], '').split()):
+                kept.add(file['key'])
+        return kept
