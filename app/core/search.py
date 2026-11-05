@@ -35,10 +35,6 @@ REVIEW_EXCERPT = 600
 READERS = 4
 READ_CHUNK = 64
 
-# Words that take a number without naming anything ("last 3 days", "over 2 GB", "top 5").
-QUANTITY_WORDS = set('''last past next over under than top first around within before after since
-    more less least most bigger smaller larger'''.split())
-
 
 def file_kinds(extension):
     return [kind for kind, extensions in SEARCH_KINDS.items() if extension in extensions]
@@ -70,28 +66,16 @@ def keyword_pattern(keyword):
     return re.compile(rf'(?<![^\W\d_]){body}{end}')
 
 
-def own_terms(text, noise):
+def own_terms(text):
     """The user's own words, keeping a number with the word before it ("homework 2", "lab 4")."""
     words = re.findall(r'[^\W\d_]+|\d+', text.casefold())
     terms = []
     for index, word in enumerate(words):
         if word.isdigit() and terms and words[index - 1] == terms[-1]:
             terms[-1] += ' ' + word
-        elif word not in noise:
+        else:
             terms.append(word)
     return list(dict.fromkeys(terms))
-
-
-def identifiers(terms):
-    """Numbered names the user typed (stat 415, homework 2, 1099); years and quantities are not names."""
-    found = []
-    for term in terms:
-        word, _, number = term.rpartition(' ')
-        if not number.isdigit() or word in QUANTITY_WORDS or re.fullmatch(r'(19|20)\d\d', number):
-            continue
-        if word or len(number) >= 3:
-            found.append(term)
-    return found
 
 
 def visual_kind(extension):
@@ -414,12 +398,11 @@ class FileSearch:
 
     @staticmethod
     def _rank_candidates(candidates, original, request, topic, queries):
-        terms = list(dict.fromkeys(own_terms(topic, set()) + request.get('keywords', [])
-                                   + own_terms(original[:1000], set())))
+        terms = list(dict.fromkeys(own_terms(topic) + request.get('keywords', [])
+                                   + own_terms(original[:1000])))
         patterns = [(term, p) for term in terms if (p := keyword_pattern(term))]
         subject = set(request.get('subject_terms', terms))
-        noise = {extension.lstrip('.') for extension in request['extensions']}
-        named = [p for term in identifiers(own_terms(original[:1000], noise)) if (p := keyword_pattern(term))]
+        named = [p for term in request['identifiers'] if (p := keyword_pattern(term))]
         carries = np.zeros(len(candidates), dtype=bool)
         documents = []
         lengths = np.empty(len(candidates), dtype=float)
@@ -471,7 +454,7 @@ class FileSearch:
         elif candidates:
             status('Finding matching files…')
             if any(not row['text'].strip() for row in candidates):
-                terms = list(dict.fromkeys(own_terms(topic, set()) + request.get('keywords', [])))
+                terms = list(dict.fromkeys(own_terms(topic) + request.get('keywords', [])))
                 request = {**request, 'subject_terms': self.runtime.review_search_terms(
                     topic, terms, status, cancelled)}
             queries = self.embeddings.embed([topic, original[:1000]], status, progress, cancelled, query=True)

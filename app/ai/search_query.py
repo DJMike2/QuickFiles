@@ -14,7 +14,8 @@ from app.ai.prompts import (SEARCH_QUERY_PROMPT, SEARCH_COMPACT_PROMPT, SEARCH_C
 
 SORTS = ['relevance', 'newest', 'oldest', 'largest', 'smallest']
 DEFAULTS = dict(query='', keywords=[], kinds=[], extensions=[], exclude_terms=[], exclude_extensions=[],
-                min_size_mb=0, max_size_mb=0, modified_after='', modified_before='', sort='relevance')
+                min_size_mb=0, max_size_mb=0, modified_after='', modified_before='', sort='relevance',
+                identifiers=[])
 UNITS = {'B': 1 / 1024**2, 'KB': 1 / 1024, 'MB': 1, 'GB': 1024, 'TB': 1024**2}
 DATE = {'type': 'string', 'pattern': r'^[0-9]{4}-[0-9]{2}-[0-9]{2}$'}
 
@@ -220,6 +221,46 @@ def combine(plans):
     return result
 
 
+def request_details(generate, request):
+    schema = object_schema({'meaning': {'enum': ['topic', 'metadata']},
+        'identifiers': {'type': 'array', 'maxItems': 8,
+                        'items': {'type': 'string', 'minLength': 1, 'maxLength': 64}}})
+    raw = generate(SEARCH_SUBJECT_PROMPT, json.dumps({'request': request}, ensure_ascii=False),
+                   schema=schema, max_tokens=160, temperature=0)
+    value = json.loads(raw)
+    if (not isinstance(value, dict) or set(value) != {'meaning', 'identifiers'}
+        or value['meaning'] not in ['topic', 'metadata']):
+        raise ValueError('Invalid request details')
+    if not isinstance(value['identifiers'], list) or len(value['identifiers']) > 8:
+        raise ValueError('Invalid item identifiers')
+    words = re.findall(r'[^\W\d_]+|\d+', request.casefold())
+    names = []
+    for phrase in value['identifiers']:
+        if not isinstance(phrase, str) or not phrase.strip() or len(phrase) > 64:
+            raise ValueError('Invalid item identifier')
+        parts = re.findall(r'[^\W\d_]+|\d+', phrase.casefold())
+        if not parts or not any(words[index:index + len(parts)] == parts for index in range(len(words))):
+            raise ValueError('Item identifier was not present in the request')
+        names.append(' '.join(parts))
+    return {'meaning': value['meaning'], 'identifiers': list(dict.fromkeys(names))}
+
+
+def identity_parts(names, subject):
+    found = []
+    # Retain numbered names from the topic draft when the classifier omits them.
+    for text in [*names, subject]:
+        words = re.findall(r'[^\W\d_]+|\d+', text.casefold())
+        numbered = False
+        for index, word in enumerate(words):
+            if word.isdigit():
+                previous = words[index - 1] if index and not words[index - 1].isdigit() else ''
+                found.append((previous + ' ' + word).strip())
+                numbered = True
+        if not numbered and text in names:
+            found.append(' '.join(words))
+    return list(dict.fromkeys(found))
+
+
 def rewrite_search(generate, request, today=None, workers=1, max_tokens=384, temperature=0):
     today = today or date.today()
     week_start = today - timedelta(days=today.weekday())
@@ -262,10 +303,11 @@ def rewrite_search(generate, request, today=None, workers=1, max_tokens=384, tem
 
     with ThreadPoolExecutor(max_workers=min(workers, 5)) as pool:
         work = [pool.submit(original), pool.submit(draft, False), pool.submit(draft, True),
-                pool.submit(classify, SEARCH_SUBJECT_PROMPT, 'request', request, ['topic', 'metadata']),
+                pool.submit(request_details, generate, request),
                 pool.submit(classify, SEARCH_ORDER_PROMPT, 'request', request, SORTS)]
         plans = [future.result() for future in work[:3]]
-        has_subject = work[3].result() == 'topic'
+        details = work[3].result()
+        has_subject = details['meaning'] == 'topic'
         requested_order = work[4].result()
     result = combine(plans)
     positive = next((plan['query'] for plan in (plans[2], plans[0], plans[1]) if plan['query'].strip()), '')
@@ -289,6 +331,7 @@ def rewrite_search(generate, request, today=None, workers=1, max_tokens=384, tem
             result['kinds'] = [kind for kind in result['kinds'] if not SEARCH_KINDS[kind].intersection(named)]
             result['extensions'] = list(dict.fromkeys(result['extensions'] + named))
     result['sort'] = requested_order
+    result['identifiers'] = identity_parts(details['identifiers'], result['query'])
     if result['min_size_mb'] or result['max_size_mb']:
         raw = generate(SEARCH_SIZE_PROMPT, json.dumps({'request': request}, ensure_ascii=False),
                        schema=SIZE_SCHEMA, max_tokens=128, temperature=0)
