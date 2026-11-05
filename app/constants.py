@@ -22,12 +22,6 @@ SEARCH_KINDS = {
         "ai model": ".gguf .safetensors .onnx .pt .pth .ckpt",
     }.items()
 }
-# Kind words describe file formats, not the subjects searched for within them.
-SEARCH_KIND_WORDS = set('''image photo picture pic video movie clip film footage recording
-    audio song music track podcast voice document doc spreadsheet sheet excel table workbook
-    presentation deck powerpoint keynote archive zip compressed code script source program
-    python java javascript typescript c++ rust installer setup install app application iso disk vm
-    shortcut link model gguf weights checkpoint llm'''.split())
 SHORTCUT_EXTENSIONS = set(".lnk .url".split())
 EXECUTABLE_EXTENSIONS = set(
     ".exe .msi .bat .cmd .ps1 .vbs .com .pif .psm1 .psd1 .wsf .hta .msc .cpl .scr "

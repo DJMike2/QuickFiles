@@ -7,7 +7,7 @@ from app.ai.model_runtime import ModelRuntime
 from app.ai.decision_cache import DecisionCache, reuse_decision
 from app.ai.evidence import compact, literal_passages
 from app.ai.quotes import choices as quote_choices, numbered as numbered_quotes, restore as restore_quote
-from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_REVIEW_PROMPT, SEARCH_SCOPE_PROMPT, SEARCH_SCOPE_ROLES,
+from app.ai.prompts import (FOLDER_ROLE_PROMPT, SEARCH_REVIEW_PROMPT, SEARCH_TERMS_PROMPT, SEARCH_SCOPE_PROMPT, SEARCH_SCOPE_ROLES,
                             CATALOG_PROMPT, CATALOG_LITERAL_PROMPT, GROUPS_PROMPT,
                             MATCH_PROMPT, REVIEW_PROMPT)
 from app.ai.search_query import rewrite_search
@@ -377,6 +377,29 @@ class AIRuntime(ModelRuntime):
         except (ValueError, KeyError, TypeError) as exc:
             self.shutdown()
             raise LLMServerError('The local model returned an invalid search request') from exc
+        except (LLMServerError, InterruptedError):
+            self.shutdown()
+            raise
+
+    def review_search_terms(self, subject, terms, status_cb=None, cancelled=None):
+        if not terms:
+            return []
+        ids = ' | '.join(json.dumps(str(index)) for index in range(1, len(terms) + 1))
+        grammar = 'root ::= "[" ( id ( "," id )* )? "]"\nid ::= ' + ids
+        user = json.dumps({'subject': subject, 'terms': [
+            {'id': index, 'term': term} for index, term in enumerate(terms, 1)]}, ensure_ascii=False)
+        try:
+            raw = self._generate(SEARCH_TERMS_PROMPT, user, status_cb, cancelled, grammar=grammar,
+                                 max_tokens=3 * len(terms) + 8, temperature=0)
+            listed = json.loads(raw)
+            if not isinstance(listed, list):
+                raise ValueError('Expected subject term ids')
+            selected = {int(index) for index in listed}
+            if not selected <= set(range(1, len(terms) + 1)):
+                raise ValueError('Unknown subject term')
+            return [term for index, term in enumerate(terms, 1) if index in selected]
+        except (ValueError, TypeError) as exc:
+            raise LLMServerError('The local model returned invalid subject terms') from exc
         except (LLMServerError, InterruptedError):
             self.shutdown()
             raise

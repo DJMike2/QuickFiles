@@ -15,7 +15,7 @@ import numpy as np
 
 from app.ai.content import read_content
 from app.ai.llm_server import LLMServerError
-from app.constants import SEARCH_KIND_WORDS, SEARCH_KINDS
+from app.constants import SEARCH_KINDS
 from app.core.blocked_paths import checked_read_path, resolve_safe, validate_root_selection, walk_read_check
 from app.core.inventory import FileEntry
 from app.core.search_scope import SearchScope
@@ -422,19 +422,15 @@ class FileSearch:
         vector /= max(float(np.linalg.norm(vector)), 1e-12)
         matrix = np.stack([np.frombuffer(row['vector'], dtype='<f4') for row in candidates])
         scores = matrix @ vector
-        noise = set(SEARCH_KINDS)
-        if request['extensions']:
-            # The format is already enforced; otherwise "cpp" may pick C++ out of all code.
-            noise |= {x.lstrip('.') for extensions in SEARCH_KINDS.values() for x in extensions}
+        noise = {extension.lstrip('.') for extension in request['extensions']}
         terms = own_terms(original[:1000], noise)
         own = [p for p in map(keyword_pattern, terms) if p]
         named = [p for p in map(keyword_pattern, identifiers(terms)) if p]
         expansions = own_terms(topic, noise) + [k for k in request.get('keywords', []) if k not in noise]
         extra = [p for p in map(keyword_pattern, dict.fromkeys(expansions)) if p]
-        # Kind words describe the format, not what a photo shows.
-        topical = [p for term in dict.fromkeys(terms + expansions)
-                   if term.removesuffix('s') not in SEARCH_KIND_WORDS
-                   and (p := keyword_pattern(term))]
+        # The model separates the subject from requested formats; use that subject for eligibility.
+        topical = [p for term in dict.fromkeys(request.get('subject_terms', expansions))
+                   if (p := keyword_pattern(term))]
         eligible = np.ones(len(candidates), dtype=bool)
         carries = np.zeros(len(candidates), dtype=bool)
         for index, row in enumerate(candidates):
@@ -469,7 +465,7 @@ class FileSearch:
             have = {row['path'] for _, row in ranked}
             folders = {Path(row['path']).parent for _, row in ranked} - {Path('.')}
             named_folders = {folder for folder in folders
-                             if any(p.search(readable(folder.as_posix()).casefold()) for p in topical)}
+                             if any(p.search(readable(folder.as_posix()).casefold()) for p in extra)}
             ranked += [(min(1., float(scores[i])), candidates[i]) for i in np.argsort(-scores)
                        if eligible[i] and candidates[i]['path'] not in have
                        and Path(candidates[i]['path']).parent in named_folders]
@@ -488,6 +484,10 @@ class FileSearch:
             ranked = [(1., row) for row in candidates]
         elif candidates:
             status('Finding matching files…')
+            if any(not row['text'].strip() for row in candidates):
+                terms = list(dict.fromkeys(own_terms(topic, set()) + request.get('keywords', [])))
+                request = {**request, 'subject_terms': self.runtime.review_search_terms(
+                    topic, terms, status, cancelled)}
             queries = self.embeddings.embed([topic, original[:1000]], status, progress, cancelled, query=True)
             ranked = self._rank_candidates(candidates, original, request, topic, queries)
         if request.get('sort', 'relevance') != 'relevance' or metadata_only:
