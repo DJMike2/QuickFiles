@@ -5,7 +5,8 @@ import os
 from pathlib import Path, PurePosixPath
 
 from app.ai.llm_server import LLMServerError
-from app.ai.prompts import CATALOG_PROMPT
+from app.ai.evidence import compact
+from app.ai.prompts import CATALOG_PROMPT, SUBJECT_PROMPT
 from app.ai.schema import OrganizationPlan, PlanAction
 from app.core.blocked_paths import checked_path
 from app.core.file_kinds import kind_of
@@ -99,6 +100,33 @@ class Planner:
                     destinations.append({'path': directory, 'existing': True, 'profile': profile})
         return destinations
 
+    def _grouping_rows(self, files):
+        rows = [{key: row[key] for key in ('id', 'name', 'kind', 'basis', 'evidence')} for row in files]
+        cache = EvidenceCache(self.cache_path)
+        descriptions, pending, keys = {}, [], {}
+        for row in rows:
+            if row['basis'] == 'filename':
+                continue
+            keys[row['id']] = cache_key('grouping-description-v1', SUBJECT_PROMPT, self.runtime.model_cache_key,
+                                       {key: value for key, value in row.items() if key != 'id'})
+            value = cache.get(keys[row['id']])
+            if (isinstance(value, dict) and isinstance(value.get('summary'), str) and value['summary'].strip()
+                    and isinstance(value.get('quote'), str) and compact(value['quote'])
+                    and compact(value['quote']) in compact(row['evidence'])):
+                descriptions[row['id']] = value
+            else:
+                pending.append(row)
+        if pending:
+            self.progress('Understanding file subjects…')
+            for value in self.runtime.describe_files(pending, self.progress, self.cancelled):
+                descriptions[value['id']] = value
+                cache.put(keys[value['id']], {'summary': value['summary'], 'quote': value['quote']})
+        for row in rows:
+            if row['id'] in descriptions:
+                value = descriptions[row['id']]
+                row['evidence'] = 'Subject description: ' + value['summary'] + '\nLiteral support: ' + value['quote']
+        return rows
+
     def plan(self, inventory, *, only_files=None, existing_only=False):
         self.check()
         root = Path(inventory.root)
@@ -120,28 +148,63 @@ class Planner:
         with log_stage(log, 'Existing folder sampling'):
             destinations = self._destinations(inventory, preparation)
         existing = list(destinations)
-        offered = [{key: row[key] for key in ('id', 'name', 'kind', 'basis', 'evidence')} for row in files]
+        with log_stage(log, 'Subject descriptions'):
+            offered = [] if existing_only or len(files) < 2 else self._grouping_rows(files)
         with log_stage(log, 'Group discovery'):
-            proposals = [] if existing_only else self.runtime.propose_groups(offered, destinations, self.progress, self.cancelled)
+            proposals = self.runtime.propose_groups(offered, destinations, self.progress, self.cancelled) if len(offered) >= 2 else []
+            unavailable = [row for row in offered if row['basis'] == 'filename']
+            if 2 <= len(unavailable) < len(offered):
+                proposals += self.runtime.propose_groups(unavailable, destinations, self.progress, self.cancelled)
+            covered = {identifier for proposal in proposals for identifier in proposal['members']}
+            remaining = [row for row in offered if row['id'] not in covered and row['basis'] != 'filename']
+            if len(remaining) >= 2 and (covered or len(remaining) < len(offered)):
+                proposals += self.runtime.propose_groups(remaining, destinations, self.progress, self.cancelled)
+        if proposals:
+            self.progress('Planning the folder layout…')
+            with log_stage(log, 'Collection reconciliation'):
+                proposals = self.runtime.reconcile_groups(proposals, offered, self.progress, self.cancelled)
+            with log_stage(log, 'Folder layout'):
+                proposals = self.runtime.arrange_groups(proposals, offered, destinations, self.progress, self.cancelled,
+                                                       root_name=root.name)
+        members = defaultdict(set)
+        authorization = FolderAuthorization(root, inventory.authorization)
+        with log_stage(log, 'Destination preparation'):
             for proposal in proposals:
                 self.check()
-                if len(set(proposal['members'])) < 2 or proposal['path'] in {dest['path'] for dest in destinations}:
+                if len(set(proposal['members'])) < 2:
                     continue
                 try:
-                    relative_parts(proposal['path'])
-                    FolderAuthorization(root, inventory.authorization).check(checked_path(root, proposal['path'] + '/__check__'))
+                    path = proposal['path']
+                    parts = relative_parts(path)
+                    authorization.check(checked_path(root, path + '/__check__'))
+                    if parts[0].casefold() == root.name.casefold() and not (root / parts[0]).exists():
+                        parts = parts[1:]
+                        if not parts:
+                            continue
+                        path = '/'.join(parts)
+                        authorization.check(checked_path(root, path + '/__check__'))
                 except (OSError, ValueError):
                     log.debug('Ignored unsupported destination proposal', exc_info=True)
                     continue
-                destinations.append({'path': proposal['path'], 'existing': False, 'profile': {
+                members[path].update(proposal['members'])
+                if path in {dest['path'] for dest in destinations}:
+                    continue
+                destinations.append({'path': path, 'existing': False, 'profile': {
                     'description': proposal['purpose'], 'scope_kind': 'topic', 'scope': [],
                     'topic': proposal['purpose'], 'quote': ''}})
 
         def choose(row):
             self.check()
+            suggested = {destination['path'] for destination in destinations
+                         if row['id'] in members.get(destination['path'], ())}
+            candidates = [destination for destination in destinations
+                          if destination['existing'] or destination['path'] in suggested] if suggested else []
+            evidence = {key: row[key] for key in ('id', 'name', 'kind', 'basis', 'evidence')}
             decision = self.runtime.choose_destination(
-                {key: row[key] for key in ('id', 'kind', 'basis', 'evidence')}, destinations,
+                evidence, candidates or destinations,
                 self.progress, self.cancelled) if destinations else {'folder': ''}
+            if candidates and len(candidates) < len(destinations) and not decision['folder']:
+                decision = self.runtime.choose_destination(evidence, destinations, self.progress, self.cancelled)
             self.check()
             return decision
 
@@ -158,7 +221,7 @@ class Planner:
                 if not assigned or (not destination['existing'] and len(assigned) < 2):
                     continue
                 decisions = self.runtime.review_destination(
-                    [{key: row[key] for key in ('id', 'kind', 'basis', 'evidence')} for row in assigned],
+                    [{key: row[key] for key in ('id', 'name', 'kind', 'basis', 'evidence')} for row in assigned],
                     destination, existing, self.progress, self.cancelled)
                 accepted = [row for row in assigned if decisions.get(row['id'], {}).get('verdict') == 'keep']
                 if not destination['existing'] and len(accepted) < 2:

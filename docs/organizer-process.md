@@ -11,8 +11,11 @@
 ```mermaid
 flowchart LR
     A[Check folders] --> B[Read evidence]
-    B --> C[Group and match]
-    C --> D[Independent review]
+    B --> S[Understand file purposes]
+    S --> C[Find shared subjects]
+    C --> L[Plan a consistent layout]
+    L --> M[Match original evidence]
+    M --> D[Independent review]
     D --> E[Before / After]
     E -->|You approve| F[Apply and verify]
     F --> G[Undo]
@@ -25,8 +28,11 @@ flowchart LR
 | **Check the location** | Resolve the selected folder. Preserve system paths, exclusions, links and protected file types. |
 | **Understand folders** | The model checks bounded file/layout evidence to distinguish filing collections from applications, projects and managed data. Uncertain folders stay untouched. |
 | **Read loose files** | Collect literal document excerpts, archive member names or honest filename/type fallbacks. Existing folder contents stay in place. |
+| **Understand file purposes** | Describe readable files briefly with literal support. Unavailable contents retain filename/type facts. Matching and review keep the original evidence and filename context. |
 | **Understand destinations** | Sample direct files from approved filing folders. The model judges their purpose without fixed subject or folder-name aliases. |
-| **Group and match** | Find shared subjects, prefer suitable existing folders, and require evidence for each placement. New folders need at least two supported files. |
+| **Find shared subjects** | Propose shared subjects in context-sized batches. Check unavailable files for broad kind collections, and omitted readable files once more. |
+| **Plan the layout** | Compare overlapping collection proposals by meaning, then plan the whole directory before naming destinations. Reconcile aliases, reuse appropriate existing folders, and choose shared parents where justified. |
+| **Match files** | Compare original evidence against existing destinations and the model's suggested new groups. If uncertain, compare the full catalog. New folders need at least two supported files. |
 | **Review independently** | A separate model decision challenges each proposed placement. Unsupported matches stay where they are. |
 | **Validate the preview** | Check paths, collisions, source identities and folder snapshots before offering moves. |
 
